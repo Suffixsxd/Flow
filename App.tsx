@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { DynamicIsland } from './components/DynamicIsland';
 import { FadeText } from './components/FadeText';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
-import { curateNote } from './services/openRouter';
+import { curateNote, refineNote } from './services/openRouter';
 import { parseFile } from './services/fileParser';
 import { Note, NoteStyle } from './types';
 import { initDB, getNotes, addNote, updateNote, deleteNote as deleteNoteDB } from './services/db';
@@ -114,8 +114,8 @@ const App: React.FC = () => {
             const currentTranscript = transcriptRef.current; // Read from Ref
             const newChars = currentTranscript.length - lastProcessedLengthRef.current;
             
-            // Only curate if we have > 30 chars of new content
-            if (newChars > 30) {
+            // Trigger if we have > 20 chars of new content (more responsive)
+            if (newChars > 20) {
                 lastProcessedLengthRef.current = currentTranscript.length;
                 
                 // Get latest context
@@ -141,7 +141,6 @@ const App: React.FC = () => {
                    console.error("Curation error", err);
                    if (err.message && err.message.includes('401')) {
                       setApiError(true);
-                      setSettingsOpen(true);
                    }
                 }
             }
@@ -197,7 +196,6 @@ const App: React.FC = () => {
             console.error("Final curation error", err);
             if (err.message && err.message.includes('401')) {
                 setApiError(true);
-                setSettingsOpen(true);
             }
          }
     }
@@ -231,11 +229,33 @@ const App: React.FC = () => {
       console.error("Manual text curation error", err);
       if (err.message && err.message.includes('401')) {
           setApiError(true);
-          setSettingsOpen(true);
       }
     } finally {
       setIsProcessingFile(false);
     }
+  };
+  
+  // Handle refinement (Editing)
+  const handleRefine = async (instructions: string) => {
+      if (!activeNoteId || !activeNote) return;
+
+      setIsProcessingFile(true); // Use processing state for spinner
+      try {
+          const refinedContent = await refineNote(activeNote.curatedContent, instructions);
+          
+          const updatedNote = { ...activeNote, curatedContent: refinedContent };
+          
+          setNotes(prev => prev.map(n => n.id === activeNote.id ? updatedNote : n));
+          updateNote(activeNote.id, activeNote.rawTranscript, refinedContent);
+          setApiError(false);
+      } catch (err: any) {
+          console.error("Refinement error", err);
+          if (err.message && err.message.includes('401')) {
+              setApiError(true);
+          }
+      } finally {
+          setIsProcessingFile(false);
+      }
   };
 
   // Handle file upload
@@ -766,7 +786,7 @@ ${note.rawTranscript}
                     >
                         <span className={`inline-flex items-center px-4 py-1.5 rounded-full text-xs font-medium border shadow-[0_0_20px_-5px_rgba(239,68,68,0.4)] ${isPaused ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20' : 'bg-red-500/10 text-red-400 border-red-500/20 animate-pulse'}`}>
                             <span className={`w-1.5 h-1.5 rounded-full mr-2 ${isPaused ? 'bg-yellow-500' : 'bg-red-500'}`} />
-                            {isProcessingFile ? 'Analyzing File' : isPaused ? 'Recording Paused' : 'Live Transcribing'}
+                            {isProcessingFile ? (activeNote.curatedContent ? 'Refining Note...' : 'Analyzing File') : isPaused ? 'Recording Paused' : 'Live Transcribing'}
                         </span>
                     </motion.div>
                 )}
@@ -870,6 +890,8 @@ ${note.rawTranscript}
         onTogglePause={togglePause}
         onSubmitText={handleTextSubmit}
         onSubmitFile={handleFileUpload}
+        activeNoteId={activeNoteId}
+        onRefine={handleRefine}
       />
 
       {/* Settings Modal */}

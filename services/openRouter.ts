@@ -67,3 +67,50 @@ export const curateNote = async (transcript: string, style: NoteStyle, previousC
     return previousContext || transcript; 
   }
 };
+
+export const refineNote = async (currentContent: string, instructions: string): Promise<string> => {
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": window.location.origin,
+        "X-Title": "Flow Notes"
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [
+          {
+            role: "system",
+            content: "You are an expert editor. Your task is to modify the provided notes according to the user's instructions. Keep the Markdown formatting."
+          },
+          {
+            role: "user",
+            content: `CURRENT NOTES:\n${currentContent}\n\nUSER INSTRUCTIONS:\n"${instructions}"\n\nOUTPUT:\nReturn the updated Markdown notes only. Do not add conversational filler.`
+          }
+        ],
+        extra_body: {
+          reasoning: {
+            enabled: true
+          }
+        }
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenRouter API Error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+
+    if (!content) throw new Error("Empty response from AI");
+
+    return content;
+
+  } catch (error) {
+    console.error("Failed to refine note:", error);
+    return currentContent; // Fallback to original
+  }
+};
