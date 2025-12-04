@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Settings, ChevronLeft, MoreHorizontal, Copy, Check, Clock, Sparkles, MicOff, Trash2, ArrowRight, Download } from 'lucide-react';
+import { Settings, ChevronLeft, MoreHorizontal, Copy, Check, Clock, Sparkles, MicOff, Trash2, ArrowRight, Download, ChevronDown, ChevronUp } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { DynamicIsland } from './components/DynamicIsland';
 import { FadeText } from './components/FadeText';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
 import { curateNote } from './services/openRouter';
+import { parseFile } from './services/fileParser';
 import { Note, NoteStyle } from './types';
 import { initDB, getNotes, addNote, updateNote, deleteNote as deleteNoteDB } from './services/db';
 
@@ -60,12 +61,19 @@ const App: React.FC = () => {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [preferredStyle, setPreferredStyle] = useState<NoteStyle>('default');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [isProcessingFile, setIsProcessingFile] = useState(false);
+  const [apiError, setApiError] = useState(false);
+  const [isTranscriptExpanded, setIsTranscriptExpanded] = useState(false);
   
+  const activeNote = notes.find(n => n.id === activeNoteId);
+
   const { 
     isListening, 
+    isPaused,
     transcript, 
     startListening, 
     stopListening, 
+    togglePause,
     resetTranscript, 
     browserSupportsSpeechRecognition,
     permissionDenied
@@ -74,6 +82,9 @@ const App: React.FC = () => {
   // Refs to handle processing intervals
   const processingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastProcessedLengthRef = useRef(0);
+  
+  // Use a ref to access the latest transcript inside setInterval without triggering re-renders/resets
+  const transcriptRef = useRef(transcript);
 
   // Initialize DB and load notes
   useEffect(() => {
@@ -82,37 +93,59 @@ const App: React.FC = () => {
     setNotes(savedNotes);
   }, []);
 
-  // Derived state
-  const activeNote = notes.find(n => n.id === activeNoteId);
+  // Sync transcript ref
+  useEffect(() => {
+    transcriptRef.current = transcript;
+    
+    // Also update the UI state for the raw transcript in real-time
+    if (activeNoteId && isListening) {
+        setNotes(prev => prev.map(n => 
+          n.id === activeNoteId ? { ...n, rawTranscript: transcript } : n
+        ));
+    }
+  }, [transcript, activeNoteId, isListening]);
 
   // Handle live curation loop
+  // IMPORTANT: We use setInterval with transcriptRef to ensure the timer doesn't reset on every word update
   useEffect(() => {
-    if (isListening && activeNoteId) {
-        // Start an interval to check for new text to curate every 5 seconds
-        // only if there is significant new text
+    if (isListening && !isPaused && activeNoteId) {
+        
         const interval = setInterval(async () => {
-            const currentTranscript = transcript;
+            const currentTranscript = transcriptRef.current; // Read from Ref
             const newChars = currentTranscript.length - lastProcessedLengthRef.current;
             
             // Only curate if we have > 30 chars of new content
             if (newChars > 30) {
                 lastProcessedLengthRef.current = currentTranscript.length;
                 
-                // Optimistic UI update for transcript
-                setNotes(prev => prev.map(n => 
-                    n.id === activeNoteId ? { ...n, rawTranscript: currentTranscript } : n
-                ));
-                updateNote(activeNoteId, currentTranscript, activeNote?.curatedContent || "");
+                // Get latest context
+                let currentCuratedContent = "";
+                setNotes(currentNotes => {
+                     const n = currentNotes.find(n => n.id === activeNoteId);
+                     currentCuratedContent = n?.curatedContent || "";
+                     return currentNotes;
+                });
 
-                // Call API
-                const curated = await curateNote(currentTranscript, preferredStyle, activeNote?.curatedContent);
-                
-                setNotes(prev => prev.map(n => 
-                    n.id === activeNoteId ? { ...n, curatedContent: curated } : n
-                ));
-                updateNote(activeNoteId, currentTranscript, curated);
+                // Persist interim
+                updateNote(activeNoteId, currentTranscript, currentCuratedContent);
+
+                try {
+                  const curated = await curateNote(currentTranscript, preferredStyle, currentCuratedContent);
+                  
+                  setNotes(prev => prev.map(n => 
+                      n.id === activeNoteId ? { ...n, curatedContent: curated } : n
+                  ));
+                  updateNote(activeNoteId, currentTranscript, curated);
+                  setApiError(false);
+                } catch (err: any) {
+                   console.error("Curation error", err);
+                   if (err.message && err.message.includes('401')) {
+                      setApiError(true);
+                      setSettingsOpen(true);
+                   }
+                }
             }
-        }, 5000);
+        }, 5000); // Check every 5 seconds
         
         processingRef.current = interval;
     } else {
@@ -122,16 +155,7 @@ const App: React.FC = () => {
     return () => {
         if (processingRef.current) clearInterval(processingRef.current);
     };
-  }, [isListening, activeNoteId, transcript, preferredStyle]);
-
-  // Handle transcript updates specifically for the raw view when not hitting API
-  useEffect(() => {
-      if (activeNoteId && isListening) {
-          setNotes(prev => prev.map(n => 
-            n.id === activeNoteId ? { ...n, rawTranscript: transcript } : n
-        ));
-      }
-  }, [transcript, activeNoteId, isListening]);
+  }, [isListening, isPaused, activeNoteId, preferredStyle]); // Removed 'transcript' from deps to prevent resets
 
 
   const startNewNote = (title: string) => {
@@ -151,8 +175,10 @@ const App: React.FC = () => {
     setActiveNoteId(newNote.id);
     resetTranscript();
     lastProcessedLengthRef.current = 0;
+    // Reset ref
+    transcriptRef.current = "";
     
-    // Directly start listening - NO TIMEOUT to preserve user gesture
+    setIsTranscriptExpanded(false); 
     startListening();
   };
 
@@ -160,11 +186,89 @@ const App: React.FC = () => {
     stopListening();
     // Final curation pass
     if (activeNoteId && transcript.length > 0) {
-         const curated = await curateNote(transcript, preferredStyle, activeNote?.curatedContent);
-         setNotes(prev => prev.map(n => 
-            n.id === activeNoteId ? { ...n, curatedContent: curated, rawTranscript: transcript } : n
-        ));
-        updateNote(activeNoteId, transcript, curated);
+         try {
+            const curated = await curateNote(transcript, preferredStyle, activeNote?.curatedContent);
+            setNotes(prev => prev.map(n => 
+                n.id === activeNoteId ? { ...n, curatedContent: curated, rawTranscript: transcript } : n
+            ));
+            updateNote(activeNoteId, transcript, curated);
+            setApiError(false);
+         } catch (err: any) {
+            console.error("Final curation error", err);
+            if (err.message && err.message.includes('401')) {
+                setApiError(true);
+                setSettingsOpen(true);
+            }
+         }
+    }
+  };
+
+  // Handle manual text submission
+  const handleTextSubmit = async (title: string, text: string) => {
+    const newNote: Note = {
+      id: Date.now().toString(),
+      title,
+      rawTranscript: text,
+      curatedContent: '',
+      createdAt: Date.now(),
+      style: preferredStyle
+    };
+
+    addNote(newNote);
+    setNotes(prev => [newNote, ...prev]);
+    setActiveNoteId(newNote.id);
+    setIsProcessingFile(true);
+    setIsTranscriptExpanded(true); // Auto expand for manual text to see what was entered
+
+    try {
+      const curated = await curateNote(text, preferredStyle);
+      const updatedNote = { ...newNote, curatedContent: curated };
+      
+      setNotes(prev => prev.map(n => n.id === newNote.id ? updatedNote : n));
+      updateNote(newNote.id, text, curated);
+      setApiError(false);
+    } catch (err: any) {
+      console.error("Manual text curation error", err);
+      if (err.message && err.message.includes('401')) {
+          setApiError(true);
+          setSettingsOpen(true);
+      }
+    } finally {
+      setIsProcessingFile(false);
+    }
+  };
+
+  // Handle file upload
+  const handleFileUpload = async (title: string, file: File) => {
+    setIsProcessingFile(true);
+    try {
+        const text = await parseFile(file);
+        
+        const newNote: Note = {
+            id: Date.now().toString(),
+            title,
+            rawTranscript: text,
+            curatedContent: '',
+            createdAt: Date.now(),
+            style: preferredStyle
+        };
+
+        addNote(newNote);
+        setNotes(prev => [newNote, ...prev]);
+        setActiveNoteId(newNote.id);
+        setIsTranscriptExpanded(false); // Keep collapsed initially for large files
+
+        const curated = await curateNote(text, preferredStyle);
+        const updatedNote = { ...newNote, curatedContent: curated };
+        
+        setNotes(prev => prev.map(n => n.id === newNote.id ? updatedNote : n));
+        updateNote(newNote.id, text, curated);
+        setApiError(false);
+    } catch (error) {
+        console.error("File processing failed:", error);
+        alert("Failed to process file. Please try again.");
+    } finally {
+        setIsProcessingFile(false);
     }
   };
 
@@ -215,6 +319,7 @@ ${note.rawTranscript}
     let inCodeBlock = false;
     let codeBlockContent: string[] = [];
     let listBuffer: React.ReactNode[] = [];
+    let tableBuffer: string[] = [];
     
     const flushList = (keyPrefix: number) => {
         if (listBuffer.length > 0) {
@@ -227,15 +332,71 @@ ${note.rawTranscript}
         }
     };
 
+    const flushTable = (keyPrefix: number) => {
+        if (tableBuffer.length === 0) return;
+
+        const rows = tableBuffer.map(row => 
+            row.split('|')
+               .filter((cell, idx, arr) => {
+                   // Markdown tables usually start and end with |, producing empty strings at ends
+                   // Simple check: keep non-empty, or keep all if middle
+                   return true; 
+               })
+        ).map(row => {
+             // Clean up row items: remove empty start/end if they exist
+             const cells = [...row];
+             if (cells.length > 0 && cells[0].trim() === '') cells.shift();
+             if (cells.length > 0 && cells[cells.length-1].trim() === '') cells.pop();
+             return cells;
+        });
+
+        if (rows.length > 1) { // Minimum header + one row or just header + separator
+            const header = rows[0];
+            // Skip separator row (index 1) if it exists and looks like separator
+            const hasSeparator = rows.length > 1 && rows[1].some(c => c.includes('-'));
+            const body = hasSeparator ? rows.slice(2) : rows.slice(1);
+
+            elements.push(
+                <div key={`table-${keyPrefix}`} className="my-6 overflow-x-auto rounded-xl border border-white/10 bg-white/5 shadow-sm">
+                    <table className="w-full border-collapse text-sm text-left">
+                        <thead>
+                            <tr>
+                                {header.map((cell, idx) => (
+                                    <th key={idx} className="p-4 border-b border-white/10 font-semibold text-white bg-white/5 whitespace-nowrap">
+                                        <FadeText text={cell.trim()} />
+                                    </th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {body.map((row, rIdx) => (
+                                <tr key={rIdx} className="group hover:bg-white/5 transition-colors border-b border-white/5 last:border-0">
+                                    {row.map((cell, cIdx) => (
+                                        <td key={cIdx} className="p-4 text-neutral-300">
+                                            <FadeText text={cell.trim()} />
+                                        </td>
+                                    ))}
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            );
+        }
+        tableBuffer = [];
+    };
+
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         const trimmed = line.trim();
         
         // --- Code Block Handling ---
         if (trimmed.startsWith('```')) {
+            flushList(i);
+            flushTable(i);
+
             if (inCodeBlock) {
                 // Close block
-                flushList(i);
                 elements.push(
                     <div key={`code-${i}`} className="bg-[#0A0A0A] p-4 rounded-xl font-mono text-sm text-neutral-300 my-4 border border-white/5 shadow-inner overflow-x-auto">
                         <pre>{codeBlockContent.join('\n')}</pre>
@@ -245,7 +406,6 @@ ${note.rawTranscript}
                 inCodeBlock = false;
             } else {
                 // Open block
-                flushList(i);
                 inCodeBlock = true;
             }
             continue;
@@ -256,7 +416,18 @@ ${note.rawTranscript}
             continue;
         }
 
-        // --- Horizontal Rule (New) ---
+        // --- Table Handling ---
+        if (trimmed.startsWith('|')) {
+            flushList(i);
+            tableBuffer.push(line);
+            continue;
+        }
+        // If not a table line, flush any accumulated table
+        if (tableBuffer.length > 0) {
+            flushTable(i);
+        }
+
+        // --- Horizontal Rule ---
         if (trimmed === '---' || trimmed === '***' || trimmed === '___') {
             flushList(i);
             elements.push(
@@ -326,8 +497,9 @@ ${note.rawTranscript}
         }
     }
     
-    // Flush any remaining list items
+    // Flush any remaining buffers
     flushList(lines.length);
+    flushTable(lines.length);
     
     return elements;
   };
@@ -386,7 +558,7 @@ ${note.rawTranscript}
                     className="text-neutral-400 font-light text-lg tracking-wide mb-12 text-center max-w-md"
                   >
                     Capture thoughts. Curated by AI.<br />
-                    <span className="text-neutral-600 text-sm mt-2 block">Voice-first note taking for the modern mind.</span>
+                    <span className="text-neutral-600 text-sm mt-2 block">Voice, text, or file.</span>
                   </motion.p>
 
                   <motion.button
@@ -467,7 +639,7 @@ ${note.rawTranscript}
                 )}
                 <button 
                     onClick={() => setSettingsOpen(true)}
-                    className="p-3 rounded-full hover:bg-white/10 transition-colors backdrop-blur-md text-neutral-300 hover:text-white"
+                    className="p-3 rounded-full transition-colors backdrop-blur-md hover:text-white hover:bg-white/10 text-neutral-300"
                 >
                     <Settings className="w-5 h-5" />
                 </button>
@@ -586,15 +758,15 @@ ${note.rawTranscript}
                 className="space-y-8"
             >
                 {/* Status Indicator */}
-                {isListening && (
+                {(isListening || isProcessingFile) && (
                     <motion.div 
                         initial={{ opacity: 0, y: -10 }}
                         animate={{ opacity: 1, y: 0 }}
                         className="flex justify-center"
                     >
-                        <span className="inline-flex items-center px-4 py-1.5 rounded-full bg-red-500/10 text-red-400 text-xs font-medium border border-red-500/20 animate-pulse shadow-[0_0_20px_-5px_rgba(239,68,68,0.4)]">
-                            <span className="w-1.5 h-1.5 rounded-full bg-red-500 mr-2" />
-                            Live Transcribing
+                        <span className={`inline-flex items-center px-4 py-1.5 rounded-full text-xs font-medium border shadow-[0_0_20px_-5px_rgba(239,68,68,0.4)] ${isPaused ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20' : 'bg-red-500/10 text-red-400 border-red-500/20 animate-pulse'}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full mr-2 ${isPaused ? 'bg-yellow-500' : 'bg-red-500'}`} />
+                            {isProcessingFile ? 'Analyzing File' : isPaused ? 'Recording Paused' : 'Live Transcribing'}
                         </span>
                     </motion.div>
                 )}
@@ -633,32 +805,55 @@ ${note.rawTranscript}
                     )}
                     </AnimatePresence>
 
-                    {/* Raw Transcript (Secondary) */}
-                    <motion.div 
-                        layout
-                        className={`p-8 rounded-[2.5rem] border border-dashed border-neutral-800 bg-neutral-900/20 backdrop-blur-sm ${activeNote.curatedContent ? 'opacity-60 hover:opacity-100 transition-opacity' : ''}`}
-                    >
-                         <div className="flex items-center justify-between mb-4 text-neutral-500 text-xs uppercase tracking-widest font-bold">
-                            <div className="flex items-center space-x-2">
+                    {/* Raw Transcript (Collapsible) */}
+                    <div className="space-y-2">
+                        <button 
+                            onClick={() => setIsTranscriptExpanded(!isTranscriptExpanded)}
+                            className="w-full flex items-center justify-between p-4 rounded-[2rem] border border-dashed border-neutral-800 bg-neutral-900/20 backdrop-blur-sm hover:bg-neutral-900/40 transition-colors text-left group"
+                        >
+                            <div className="flex items-center space-x-2 text-neutral-500 text-xs uppercase tracking-widest font-bold pl-4">
                                 <MoreHorizontal className="w-3 h-3" />
-                                <span>Live Transcript</span>
+                                <span>{isProcessingFile ? "File Content" : "Raw Transcript"}</span>
                             </div>
-                            <button
-                                onClick={() => handleCopy(activeNote.rawTranscript, 'raw')}
-                                className="p-2 rounded-full hover:bg-white/10 text-neutral-500 hover:text-white transition-colors"
-                                title="Copy Text"
-                            >
-                                {copiedId === 'raw' ? <Check size={14} /> : <Copy size={14} />}
-                            </button>
-                        </div>
-                        <div className="text-neutral-400 text-base leading-relaxed font-mono">
-                            {activeNote.rawTranscript ? (
-                                <FadeText text={activeNote.rawTranscript} />
-                            ) : (
-                                <span className="italic opacity-30">Listening for your voice...</span>
+                            <div className="flex items-center space-x-2 pr-2">
+                                <div className={`p-2 rounded-full text-neutral-500 transition-colors ${isTranscriptExpanded ? 'bg-white/10 text-white' : ''}`}>
+                                     {isTranscriptExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                                </div>
+                            </div>
+                        </button>
+                        
+                        <AnimatePresence>
+                            {isTranscriptExpanded && (
+                                <motion.div 
+                                    initial={{ height: 0, opacity: 0 }}
+                                    animate={{ height: 'auto', opacity: 1 }}
+                                    exit={{ height: 0, opacity: 0 }}
+                                    className="overflow-hidden"
+                                >
+                                    <div className="p-8 rounded-[2.5rem] border border-dashed border-neutral-800 bg-neutral-900/20 backdrop-blur-sm relative">
+                                        <div className="absolute top-4 right-4">
+                                             <button
+                                                onClick={() => handleCopy(activeNote.rawTranscript, 'raw')}
+                                                className="p-2 rounded-full hover:bg-white/10 text-neutral-500 hover:text-white transition-colors"
+                                                title="Copy Text"
+                                            >
+                                                {copiedId === 'raw' ? <Check size={14} /> : <Copy size={14} />}
+                                            </button>
+                                        </div>
+                                        <div className="text-neutral-400 text-base leading-relaxed font-mono whitespace-pre-wrap">
+                                            {activeNote.rawTranscript ? (
+                                                <FadeText text={activeNote.rawTranscript} />
+                                            ) : (
+                                                <span className="italic opacity-30">
+                                                    {isProcessingFile ? "Extracting text..." : "Listening for your voice..."}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                </motion.div>
                             )}
-                        </div>
-                    </motion.div>
+                        </AnimatePresence>
+                    </div>
                 </div>
             </motion.div>
         )}
@@ -668,8 +863,13 @@ ${note.rawTranscript}
       {/* Dynamic Island Control (Only show in App View) */}
       <DynamicIsland 
         isRecording={isListening}
+        isPaused={isPaused}
+        isLoading={isProcessingFile}
         onStartRecording={startNewNote}
         onStopRecording={handleStopRecording}
+        onTogglePause={togglePause}
+        onSubmitText={handleTextSubmit}
+        onSubmitFile={handleFileUpload}
       />
 
       {/* Settings Modal */}
@@ -694,37 +894,47 @@ ${note.rawTranscript}
                   <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
 
                   <div className="flex justify-between items-center mb-6">
-                      <h2 className="text-lg font-medium text-white">Curation Style</h2>
+                      <h2 className="text-lg font-medium text-white">Settings</h2>
                       <button onClick={() => setSettingsOpen(false)} className="text-neutral-500 hover:text-white transition-colors">Close</button>
                   </div>
                   
-                  <div className="space-y-2">
-                      {(['default', 'academic', 'creative', 'meeting'] as NoteStyle[]).map((style) => {
-                          const Icon = FormatIcons[style];
-                          const isActive = preferredStyle === style;
-                          return (
-                              <button
-                                key={style}
-                                onClick={() => setPreferredStyle(style)}
-                                className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all duration-300 ${
-                                    isActive 
-                                    ? 'bg-white text-black border-white shadow-[0_0_20px_-5px_rgba(255,255,255,0.3)]' 
-                                    : 'bg-neutral-900/50 text-neutral-400 border-transparent hover:bg-neutral-800'
-                                }`}
-                              >
-                                  <div className="flex items-center space-x-3">
-                                      <Icon className={`w-5 h-5 ${isActive ? 'text-black' : 'text-neutral-500'}`} />
-                                      <span className="capitalize font-medium">{style}</span>
-                                  </div>
-                                  {isActive && (
-                                    <motion.div 
-                                        layoutId="activeDot"
-                                        className="w-2 h-2 rounded-full bg-black" 
-                                    />
-                                  )}
-                              </button>
-                          )
-                      })}
+                  {apiError && (
+                      <div className="mb-4 p-3 bg-red-900/20 border border-red-500/20 rounded-xl text-red-400 text-sm flex items-start space-x-2">
+                          <span className="font-bold">Error:</span>
+                          <span>Invalid API Key or Service Unavailable (401).</span>
+                      </div>
+                  )}
+
+                  <div className="mb-4">
+                      <label className="text-xs uppercase tracking-wider text-neutral-500 font-bold mb-3 block">Curation Style</label>
+                      <div className="space-y-2">
+                          {(['default', 'academic', 'creative', 'meeting'] as NoteStyle[]).map((style) => {
+                              const Icon = FormatIcons[style];
+                              const isActive = preferredStyle === style;
+                              return (
+                                  <button
+                                    key={style}
+                                    onClick={() => setPreferredStyle(style)}
+                                    className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all duration-300 ${
+                                        isActive 
+                                        ? 'bg-white text-black border-white shadow-[0_0_20px_-5px_rgba(255,255,255,0.3)]' 
+                                        : 'bg-neutral-900/50 text-neutral-400 border-transparent hover:bg-neutral-800'
+                                    }`}
+                                  >
+                                      <div className="flex items-center space-x-3">
+                                          <Icon className={`w-5 h-5 ${isActive ? 'text-black' : 'text-neutral-500'}`} />
+                                          <span className="capitalize font-medium">{style}</span>
+                                      </div>
+                                      {isActive && (
+                                        <motion.div 
+                                            layoutId="activeDot"
+                                            className="w-2 h-2 rounded-full bg-black" 
+                                        />
+                                      )}
+                                  </button>
+                              )
+                          })}
+                      </div>
                   </div>
               </motion.div>
           </motion.div>

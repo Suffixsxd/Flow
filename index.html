@@ -51,9 +51,21 @@
         "react-dom/": "https://esm.sh/react-dom@18.2.0/",
         "react/": "https://esm.sh/react@18.2.0/",
         "react": "https://esm.sh/react@18.2.0",
-        "framer-motion": "https://esm.sh/framer-motion@10.16.4?external=react,react-dom"
+        "framer-motion": "https://esm.sh/framer-motion@10.16.4?external=react,react-dom",
+        "pdfjs-dist": "https://esm.sh/pdfjs-dist@3.11.174",
+        "mammoth": "https://esm.sh/mammoth@1.6.0"
       }
     }
+    </script>
+    <script type="module">
+        // Set worker source for PDF.js
+        import * as pdfjsLib from 'pdfjs-dist';
+        // Handle ESM default export quirk
+        const pdfjs = pdfjsLib.default || pdfjsLib;
+        if (pdfjs.GlobalWorkerOptions) {
+            // Use jsDelivr for a stable, CORS-friendly worker script
+            pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+        }
     </script>
   </head>
   <body>
