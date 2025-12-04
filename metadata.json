@@ -1,0 +1,7 @@
+{
+  "name": "Flow",
+  "description": "An AI-powered note taker with dynamic island UI and live curation.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
