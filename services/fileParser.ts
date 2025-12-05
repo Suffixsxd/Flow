@@ -21,7 +21,21 @@ export const parseFile = async (file: File): Promise<string> => {
     return parseDocx(file);
   }
 
-  throw new Error("Unsupported file type. Please use .txt, .md, .pdf, or .docx");
+  throw new Error(`Unsupported file type: ${file.name}. Please use .txt, .md, .pdf, or .docx`);
+};
+
+export const parseMultipleFiles = async (files: File[]): Promise<string> => {
+  const results = await Promise.all(files.map(async (file) => {
+    try {
+      const content = await parseFile(file);
+      return `--- START OF FILE: ${file.name} ---\n\n${content}\n\n--- END OF FILE: ${file.name} ---\n`;
+    } catch (e) {
+      console.error(`Error parsing ${file.name}:`, e);
+      return `--- ERROR PARSING FILE: ${file.name} ---\n`;
+    }
+  }));
+
+  return results.join('\n');
 };
 
 const parsePdf = async (file: File): Promise<string> => {

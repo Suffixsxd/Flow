@@ -5,7 +5,7 @@ import { DynamicIsland } from './components/DynamicIsland';
 import { FadeText } from './components/FadeText';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
 import { curateNote, refineNote } from './services/openRouter';
-import { parseFile } from './services/fileParser';
+import { parseMultipleFiles } from './services/fileParser';
 import { Note, NoteStyle } from './types';
 import { initDB, getNotes, addNote, updateNote, deleteNote as deleteNoteDB } from './services/db';
 
@@ -258,11 +258,11 @@ const App: React.FC = () => {
       }
   };
 
-  // Handle file upload
-  const handleFileUpload = async (title: string, file: File) => {
+  // Handle file upload (Single or Multiple)
+  const handleFileUpload = async (title: string, files: File[]) => {
     setIsProcessingFile(true);
     try {
-        const text = await parseFile(file);
+        const text = await parseMultipleFiles(files);
         
         const newNote: Note = {
             id: Date.now().toString(),

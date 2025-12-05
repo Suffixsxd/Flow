@@ -9,7 +9,7 @@ interface DynamicIslandProps {
   onStopRecording: () => void;
   onTogglePause: () => void;
   onSubmitText: (title: string, text: string) => void;
-  onSubmitFile: (title: string, file: File) => void;
+  onSubmitFile: (title: string, files: File[]) => void;
   isLoading?: boolean;
   activeNoteId?: string | null;
   onRefine?: (instruction: string) => void;
@@ -112,9 +112,9 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file && title.trim()) {
-      onSubmitFile(title, file);
+    const files = e.target.files;
+    if (files && files.length > 0 && title.trim()) {
+      onSubmitFile(title, Array.from(files));
     }
   };
 
@@ -182,7 +182,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0, transition: { duration: 0.1 } }}
-                className="flex items-center space-x-3 absolute inset-0 justify-center z-20 pointer-events-none"
+                className="flex items-center space-x-3 absolute inset-0 justify-center z-[20] pointer-events-none"
               >
                   <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" />
                   <span className="text-sm font-medium text-neutral-300">
@@ -202,7 +202,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                   setExpanded(true);
                   if (isEditMode) setMode('text'); // Default to text for refine
               }}
-              className="absolute inset-0 w-full h-full flex items-center justify-center space-x-2.5 text-white hover:bg-white/5 transition-colors z-10"
+              className="absolute inset-0 w-full h-full flex items-center justify-center space-x-2.5 text-white hover:bg-white/5 transition-colors z-[10]"
             >
               <div className="bg-white text-black p-1 rounded-full flex items-center justify-center">
                 {isEditMode ? <Sparkles size={16} /> : <Plus size={16} />}
@@ -392,6 +392,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
       {/* Hidden File Input */}
       <input 
         type="file" 
+        multiple
         ref={fileInputRef} 
         className="hidden" 
         accept=".txt,.md,.pdf,.docx"
