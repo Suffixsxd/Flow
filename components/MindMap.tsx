@@ -90,7 +90,7 @@ export const MindMap: React.FC<MindMapProps> = ({ code }) => {
   return (
     <div 
         ref={containerRef}
-        className="relative w-full h-[85vh] bg-[#050505] rounded-[2.5rem] overflow-hidden border border-white/10 shadow-2xl group select-none"
+        className="relative w-full h-[85vh] bg-[#050505] rounded-[2.5rem] overflow-hidden border border-white/10 shadow-2xl group select-none touch-none"
         onWheel={handleWheel}
     >
         {/* Spatial Grid Background */}
@@ -126,7 +126,7 @@ export const MindMap: React.FC<MindMapProps> = ({ code }) => {
         )}
 
         {/* Floating Controls */}
-        <div className="absolute bottom-6 right-6 flex flex-col gap-2 z-10">
+        <div className="absolute bottom-24 right-6 md:bottom-6 md:right-6 flex flex-col gap-2 z-10">
             <button onClick={handleZoomIn} className="p-3 bg-neutral-800/80 hover:bg-neutral-700 text-white rounded-full border border-white/10 backdrop-blur-md shadow-lg transition-colors" title="Zoom In">
                 <ZoomIn size={20} />
             </button>

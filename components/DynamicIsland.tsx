@@ -33,12 +33,20 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
   const [title, setTitle] = useState('');
   const [mode, setMode] = useState<InputMode>('voice');
   const [textInput, setTextInput] = useState('');
+  const [windowWidth, setWindowWidth] = useState(typeof window !== 'undefined' ? window.innerWidth : 1024);
   
   const inputRef = useRef<HTMLInputElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isEditMode = !!activeNoteId;
+  const isMobile = windowWidth < 640;
+
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Reset state when active note changes
   useEffect(() => {
@@ -127,25 +135,27 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
 
   // Calculate dynamic dimensions based on state
   const getDimensions = () => {
-      if (isRecording) return { width: 340, height: 60 };
+      if (isRecording) return { width: isMobile ? windowWidth * 0.9 : 340, height: 60 };
       if (isLoading) return { width: 220, height: 60 };
       if (!expanded) {
           return { width: isEditMode ? 160 : 180, height: 60 };
       }
       
       // Expanded Dimensions
+      const expandedWidth = isMobile ? windowWidth * 0.95 : (isEditMode ? 500 : 520);
+
       if (isEditMode) {
-           return { width: 500, height: 200 }; // Compact for edit instructions
+           return { width: expandedWidth, height: 200 }; // Compact for edit instructions
       }
       
-      if (mode === 'text') return { width: 550, height: 280 };
-      return { width: 520, height: 140 }; 
+      if (mode === 'text') return { width: isMobile ? windowWidth * 0.95 : 550, height: isMobile ? 350 : 280 };
+      return { width: expandedWidth, height: isMobile ? 180 : 140 }; 
   };
 
   const dimensions = getDimensions();
 
   return (
-    <div className="fixed bottom-10 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center">
+    <div className={`fixed left-1/2 -translate-x-1/2 z-50 flex flex-col items-center ${isMobile ? 'bottom-6' : 'bottom-10'}`}>
       <style>{`
         /* Force hide content when not expanded to prevent layout issues and click blocking */
         [data-expanded="false"] .island-content,
@@ -202,7 +212,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                   setExpanded(true);
                   if (isEditMode) setMode('text'); // Default to text for refine
               }}
-              className="absolute inset-0 w-full h-full flex items-center justify-center space-x-2.5 text-white hover:bg-white/5 transition-colors z-[10]"
+              className="absolute inset-0 w-full h-full flex items-center justify-center space-x-2.5 text-white hover:bg-white/5 transition-colors z-[20]"
             >
               <div className="bg-white text-black p-1 rounded-full flex items-center justify-center">
                 {isEditMode ? <Sparkles size={16} /> : <Plus size={16} />}
@@ -316,7 +326,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                 {/* Body Section */}
                 <motion.div 
                     layout
-                    className="flex-1 w-full px-4 flex flex-col"
+                    className="flex-1 w-full px-4 flex flex-col min-h-0"
                 >
                     {/* Text Input Area */}
                     {(mode === 'text' || isEditMode) && (
@@ -327,13 +337,13 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                             value={textInput}
                             onChange={(e) => setTextInput(e.target.value)}
                             placeholder={isEditMode ? "How should I change this? (e.g. 'Make it shorter')" : "Type your notes here..."}
-                            className="w-full flex-1 bg-white/5 rounded-xl p-4 text-neutral-300 placeholder-neutral-600 resize-none outline-none border border-white/5 mb-3 text-sm font-light leading-relaxed scrollbar-hide"
+                            className="w-full flex-1 bg-white/5 rounded-xl p-4 text-neutral-300 placeholder-neutral-600 resize-none outline-none border border-white/5 mb-3 text-sm font-light leading-relaxed scrollbar-hide min-h-[100px]"
                         />
                     )}
 
-                    <div className="flex items-center justify-between mt-auto pb-2">
+                    <div className="flex items-center justify-between mt-auto pb-2 gap-2">
                         {/* Mode Toggles (Hidden in Edit Mode if simplistic) */}
-                        <div className="flex items-center space-x-1 bg-white/5 rounded-full p-1 border border-white/5">
+                        <div className="flex items-center space-x-1 bg-white/5 rounded-full p-1 border border-white/5 shrink-0">
                             {/* In Edit mode, we focus on Text instructions for simplicity, but could allow Voice instructions later */}
                             {!isEditMode && (
                                 <>
@@ -372,7 +382,7 @@ export const DynamicIsland: React.FC<DynamicIslandProps> = ({
                                     animate={{ opacity: 1, scale: 1 }}
                                     exit={{ opacity: 0, scale: 0.5 }}
                                     onClick={handleStart}
-                                    className="h-10 px-5 rounded-full bg-white text-black flex items-center space-x-2 font-medium text-sm hover:scale-105 active:scale-95 transition-transform"
+                                    className="h-10 px-5 rounded-full bg-white text-black flex items-center space-x-2 font-medium text-sm hover:scale-105 active:scale-95 transition-transform whitespace-nowrap"
                                 >
                                     <span>
                                         {isEditMode ? 'Refine' : mode === 'voice' ? 'Record' : mode === 'text' ? 'Curate' : 'Upload'}
