@@ -10,7 +10,7 @@ interface MindMapProps {
 export const MindMap: React.FC<MindMapProps> = ({ code }) => {
   const [svg, setSvg] = useState<string>('');
   const [error, setError] = useState<boolean>(false);
-  const [scale, setScale] = useState(0.9);
+  const [scale, setScale] = useState(0.8); // Start slightly zoomed out for large maps
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -30,10 +30,10 @@ export const MindMap: React.FC<MindMapProps> = ({ code }) => {
           fontFamily: 'Inter, sans-serif',
           flowchart: {
               curve: 'basis',
-              padding: 15, // Compact padding
-              nodeSpacing: 50, // Standard spacing for keywords
-              rankSpacing: 80, // Standard vertical spacing
-              useMaxWidth: false,
+              padding: 20, // More padding for content
+              nodeSpacing: 60, // Spacing for wider nodes
+              rankSpacing: 80, 
+              useMaxWidth: false, // Allow nodes to grow
               htmlLabels: true,
           }
         });
@@ -52,8 +52,6 @@ export const MindMap: React.FC<MindMapProps> = ({ code }) => {
         // Render
         const { svg } = await mermaid.render(id, code);
         setSvg(svg);
-        // Reset scale only if it's a fresh render to avoid jumping
-        // We rely on user interactions for perfect fit
       } catch (err) {
         console.error("Mermaid render error:", err);
         setError(true);
@@ -65,7 +63,7 @@ export const MindMap: React.FC<MindMapProps> = ({ code }) => {
 
   const handleZoomIn = () => setScale(prev => Math.min(prev + 0.2, 4));
   const handleZoomOut = () => setScale(prev => Math.max(prev - 0.2, 0.2));
-  const handleReset = () => setScale(0.9);
+  const handleReset = () => setScale(0.8);
 
   const handleWheel = (e: React.WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {

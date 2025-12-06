@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { Settings, ChevronLeft, MoreHorizontal, Copy, Check, Clock, Sparkles, MicOff, Trash2, ArrowRight, Download, ChevronDown, ChevronUp, Network, BookOpen, FileText, Loader2, Wand2, LogIn, LogOut, User as UserIcon, X, Mail } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -9,8 +10,8 @@ import { useSpeechRecognition } from './hooks/useSpeechRecognition';
 import { curateNote, refineNote, generateMindMap, generateFlashcards } from './services/openRouter';
 import { parseMultipleFiles } from './services/fileParser';
 import { Note, NoteStyle, Flashcard, User } from './types';
-import { initDB, getNotes, addNote, updateNote, updateMindMap, updateFlashcards, deleteNote as deleteNoteDB, loginUser, registerUser, verifyUser } from './services/db';
-import { sendVerificationEmail } from './services/email';
+import { getNotes, addNote, updateNote, updateMindMap, updateFlashcards, deleteNote as deleteNoteDB, createUserDoc, getUserDoc } from './services/db';
+import { loginUser, registerUser, logoutUser, subscribeToAuthChanges } from './services/auth';
 
 // Icons for formatting
 const FormatIcons = {
@@ -100,7 +101,7 @@ const App: React.FC = () => {
 
   const { 
     isListening, 
-    isPaused,
+    isPaused, 
     transcript, 
     startListening, 
     stopListening, 
@@ -114,26 +115,37 @@ const App: React.FC = () => {
   const lastProcessedLengthRef = useRef(0);
   const transcriptRef = useRef(transcript);
 
-  // Initialize DB and try to restore session
+  // Initialize Auth Listener
   useEffect(() => {
-    initDB();
-    const storedUser = localStorage.getItem('flow_user');
-    if (storedUser) {
-        try {
-            setCurrentUser(JSON.parse(storedUser));
-        } catch(e) {}
-    }
-  }, []);
+    const unsubscribe = subscribeToAuthChanges(async (supabaseUser) => {
+      if (supabaseUser) {
+        // Fetch full user doc from public DB
+        let userDoc = await getUserDoc(supabaseUser.id);
+        
+        // Lazy Creation: If public doc is missing (e.g. created via link verification flow)
+        // create it now using the metadata from the auth user
+        if (!userDoc) {
+             await createUserDoc(supabaseUser);
+             userDoc = await getUserDoc(supabaseUser.id);
+        }
 
-  // Load notes when user changes
-  useEffect(() => {
-    if (currentUser) {
-        const savedNotes = getNotes(currentUser.id);
-        setNotes(savedNotes);
-    } else {
+        const mergedUser = userDoc ? { ...supabaseUser, ...userDoc } : supabaseUser;
+        setCurrentUser(mergedUser);
+        setShowLanding(false);
+        try {
+          const fetchedNotes = await getNotes(mergedUser.id);
+          setNotes(fetchedNotes);
+        } catch (e) {
+          console.error("Error loading notes", e);
+        }
+      } else {
+        setCurrentUser(null);
+        setShowLanding(true);
         setNotes([]);
-    }
-  }, [currentUser]);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
 
   // Reset view mode when switching notes
   useEffect(() => {
@@ -168,7 +180,7 @@ const App: React.FC = () => {
                      return currentNotes;
                 });
 
-                updateNote(activeNoteId, currentTranscript, currentCuratedContent);
+                await updateNote(activeNoteId, currentTranscript, currentCuratedContent);
                 setIsCurating(true); // Indicate live update
 
                 try {
@@ -176,7 +188,7 @@ const App: React.FC = () => {
                   setNotes(prev => prev.map(n => 
                       n.id === activeNoteId ? { ...n, curatedContent: curated } : n
                   ));
-                  updateNote(activeNoteId, currentTranscript, curated);
+                  await updateNote(activeNoteId, currentTranscript, curated);
                   setApiError(false);
                 } catch (err: any) {
                    console.error("Curation error", err);
@@ -194,15 +206,12 @@ const App: React.FC = () => {
   }, [isListening, isPaused, activeNoteId, preferredStyle, currentUser]);
 
   // Auth Functions
-  const handleLogout = () => {
-      setCurrentUser(null);
-      localStorage.removeItem('flow_user');
-      setShowLanding(true);
-      setNotes([]);
+  const handleLogout = async () => {
+      await logoutUser();
       setActiveNoteId(null);
   };
 
-  const startNewNote = (title: string) => {
+  const startNewNote = async (title: string) => {
     if (!currentUser) {
         setShowAuthModal(true);
         return;
@@ -216,7 +225,8 @@ const App: React.FC = () => {
       createdAt: Date.now(),
       style: preferredStyle
     };
-    addNote(newNote);
+    
+    // Optimistic Update
     setNotes(prev => [newNote, ...prev]);
     setActiveNoteId(newNote.id);
     resetTranscript();
@@ -224,6 +234,9 @@ const App: React.FC = () => {
     transcriptRef.current = "";
     setIsTranscriptExpanded(false); 
     startListening();
+
+    // Persist
+    await addNote(newNote);
   };
 
   const handleStopRecording = async () => {
@@ -235,7 +248,7 @@ const App: React.FC = () => {
             setNotes(prev => prev.map(n => 
                 n.id === activeNoteId ? { ...n, curatedContent: curated, rawTranscript: transcript } : n
             ));
-            updateNote(activeNoteId, transcript, curated);
+            await updateNote(activeNoteId, transcript, curated);
             setApiError(false);
          } catch (err: any) {
             console.error("Final curation error", err);
@@ -260,7 +273,8 @@ const App: React.FC = () => {
       createdAt: Date.now(),
       style: preferredStyle
     };
-    addNote(newNote);
+    
+    // Optimistic UI
     setNotes(prev => [newNote, ...prev]);
     setActiveNoteId(newNote.id);
     setIsProcessingFile(true);
@@ -268,10 +282,11 @@ const App: React.FC = () => {
     setIsCurating(true);
 
     try {
+      await addNote(newNote); // Save initial empty note
       const curated = await curateNote(text, preferredStyle);
       const updatedNote = { ...newNote, curatedContent: curated };
       setNotes(prev => prev.map(n => n.id === newNote.id ? updatedNote : n));
-      updateNote(newNote.id, text, curated);
+      await updateNote(newNote.id, text, curated);
       setApiError(false);
     } catch (err: any) {
       console.error("Manual text curation error", err);
@@ -290,7 +305,7 @@ const App: React.FC = () => {
           const refinedContent = await refineNote(activeNote.curatedContent, instructions);
           const updatedNote = { ...activeNote, curatedContent: refinedContent };
           setNotes(prev => prev.map(n => n.id === activeNote.id ? updatedNote : n));
-          updateNote(activeNote.id, activeNote.rawTranscript, refinedContent);
+          await updateNote(activeNote.id, activeNote.rawTranscript, refinedContent);
           setApiError(false);
       } catch (err: any) {
           console.error("Refinement error", err);
@@ -319,15 +334,16 @@ const App: React.FC = () => {
             createdAt: Date.now(),
             style: preferredStyle
         };
-        addNote(newNote);
+        
         setNotes(prev => [newNote, ...prev]);
         setActiveNoteId(newNote.id);
         setIsTranscriptExpanded(false);
+        await addNote(newNote);
 
         const curated = await curateNote(text, preferredStyle);
         const updatedNote = { ...newNote, curatedContent: curated };
         setNotes(prev => prev.map(n => n.id === newNote.id ? updatedNote : n));
-        updateNote(newNote.id, text, curated);
+        await updateNote(newNote.id, text, curated);
         setApiError(false);
     } catch (error) {
         console.error("File processing failed:", error);
@@ -338,11 +354,11 @@ const App: React.FC = () => {
     }
   };
 
-  const deleteNote = (e: React.MouseEvent, id: string) => {
+  const deleteNote = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    deleteNoteDB(id);
-    setNotes(prev => prev.filter(n => n.id !== id));
+    setNotes(prev => prev.filter(n => n.id !== id)); // Optimistic delete
     if (activeNoteId === id) setActiveNoteId(null);
+    await deleteNoteDB(id);
   };
 
   const handleCopy = (content: string, id: string) => {
@@ -374,7 +390,7 @@ const App: React.FC = () => {
         try {
             const mermaidCode = await generateMindMap(activeNote.curatedContent);
             setNotes(prev => prev.map(n => n.id === activeNote.id ? { ...n, mindMapMermaid: mermaidCode } : n));
-            updateMindMap(activeNote.id, mermaidCode);
+            await updateMindMap(activeNote.id, mermaidCode);
         } catch (e) {
             console.error("Failed to gen map", e);
         } finally {
@@ -392,7 +408,7 @@ const App: React.FC = () => {
               const cards = await generateFlashcards(activeNote.curatedContent);
               const json = JSON.stringify(cards);
               setNotes(prev => prev.map(n => n.id === activeNote.id ? { ...n, flashcards: json } : n));
-              updateFlashcards(activeNote.id, json);
+              await updateFlashcards(activeNote.id, json);
           } catch (e) {
               console.error("Failed to gen cards", e);
           } finally {
@@ -485,52 +501,57 @@ const App: React.FC = () => {
   };
 
   const AuthModal = () => {
-      const [step, setStep] = useState<'signin' | 'signup' | 'verify'>('signin');
-      const [username, setUsername] = useState('');
+      const [isSignUp, setIsSignUp] = useState(false);
       const [email, setEmail] = useState('');
+      const [username, setUsername] = useState('');
       const [password, setPassword] = useState('');
-      const [verificationCode, setVerificationCode] = useState('');
-      const [isSendingEmail, setIsSendingEmail] = useState(false);
+      const [loading, setLoading] = useState(false);
       const [error, setError] = useState('');
+      const [isLinkSent, setIsLinkSent] = useState(false);
 
       const handleSubmit = async (e: React.FormEvent) => {
           e.preventDefault();
           setError('');
+          setLoading(true);
           try {
-              if (step === 'signup') {
-                  // 1. Register User in DB (Generates Code)
-                  const code = registerUser(username, email, password);
+              if (isSignUp) {
+                  if (!username.trim()) throw new Error("Username is required.");
                   
-                  // 2. Send Email
-                  setIsSendingEmail(true);
+                  // Register (Sends Verification Link automatically via Supabase)
                   try {
-                      await sendVerificationEmail(email, code, username);
-                      setStep('verify');
-                  } catch (mailError: any) {
-                      setError("Failed to send email. Check console for code (Dev Mode).");
-                  } finally {
-                      setIsSendingEmail(false);
+                      await registerUser(email, password, username);
+                      setIsLinkSent(true);
+                  } catch (regError: any) {
+                      if (regError.message.includes("User already registered")) {
+                           setError("Email already registered. Please sign in.");
+                      } else {
+                          throw regError;
+                      }
                   }
-
-              } else if (step === 'signin') {
-                  const user = loginUser(username, password);
-                  setCurrentUser(user);
-                  localStorage.setItem('flow_user', JSON.stringify(user));
+              } else {
+                  await loginUser(email, password);
                   setShowAuthModal(false);
-                  setShowLanding(false);
-              } else if (step === 'verify') {
-                  verifyUser(email, verificationCode);
-                  const user = loginUser(username, password); // Auto login after verify
-                  setCurrentUser(user);
-                  localStorage.setItem('flow_user', JSON.stringify(user));
-                  setShowAuthModal(false);
-                  setShowLanding(false);
               }
           } catch (e: any) {
+              console.error("Auth error:", e);
               setError(e.message || "Authentication failed");
-              setIsSendingEmail(false);
+          } finally {
+              setLoading(false);
           }
       };
+      
+      if (isLinkSent) {
+          return (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-xl p-4">
+                <div className="w-full max-w-md bg-[#111] border border-white/10 rounded-3xl p-8 text-center">
+                    <Mail className="w-12 h-12 text-blue-400 mx-auto mb-4" />
+                    <h2 className="text-2xl font-light text-white mb-2">Check your email</h2>
+                    <p className="text-neutral-400 text-sm mb-6">We sent a verification link to <strong>{email}</strong>.<br/>Click the link to activate your account and sign in.</p>
+                    <button onClick={() => { setIsLinkSent(false); setShowAuthModal(false); }} className="text-sm text-neutral-500 hover:text-white">Close</button>
+                </div>
+            </motion.div>
+          );
+      }
 
       return (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-xl p-4">
@@ -538,61 +559,38 @@ const App: React.FC = () => {
                    <button onClick={() => setShowAuthModal(false)} className="absolute top-4 right-4 p-2 text-neutral-500 hover:text-white"><X size={20} /></button>
                    <div className="flex flex-col items-center mb-6">
                         <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center mb-4"><Logo className="w-6 h-6 text-white" /></div>
-                        <h2 className="text-2xl font-light text-white">
-                            {step === 'verify' ? "Check your email" : step === 'signup' ? "Create Account" : "Welcome Back"}
-                        </h2>
-                        <p className="text-neutral-500 text-sm mt-1 text-center">
-                            {step === 'verify' ? `We sent a code to ${email}` : "Sign in to sync your notes"}
-                        </p>
+                        <h2 className="text-2xl font-light text-white">{isSignUp ? "Create Account" : "Welcome Back"}</h2>
+                        <p className="text-neutral-500 text-sm mt-1">Sign in to sync your notes across devices</p>
                    </div>
                    
                    {error && <div className="mb-4 p-3 bg-red-900/20 text-red-400 text-sm rounded-xl text-center border border-red-500/20">{error}</div>}
 
                    <form onSubmit={handleSubmit} className="space-y-4">
-                       {step !== 'verify' && (
-                           <>
-                               <div>
-                                   <label className="block text-xs font-bold text-neutral-500 uppercase tracking-wider mb-2">Username</label>
-                                   <input type="text" value={username} onChange={e => setUsername(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-white/30 transition-colors" placeholder="Enter username" required />
-                               </div>
-                               {step === 'signup' && (
-                                   <div>
-                                       <label className="block text-xs font-bold text-neutral-500 uppercase tracking-wider mb-2">Email</label>
-                                       <input type="email" value={email} onChange={e => setEmail(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-white/30 transition-colors" placeholder="Enter email" required />
-                                   </div>
-                               )}
-                               <div>
-                                   <label className="block text-xs font-bold text-neutral-500 uppercase tracking-wider mb-2">Password</label>
-                                   <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-white/30 transition-colors" placeholder="Enter password" required />
-                               </div>
-                           </>
-                       )}
-
-                       {step === 'verify' && (
+                       {isSignUp && (
                            <div>
-                               <label className="block text-xs font-bold text-neutral-500 uppercase tracking-wider mb-2">Verification Code</label>
-                               <input type="text" value={verificationCode} onChange={e => setVerificationCode(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-white/30 transition-colors text-center text-2xl tracking-[0.5em] font-mono" placeholder="000000" maxLength={6} required />
-                               <p className="text-center text-xs text-neutral-500 mt-2">Check your browser console if email doesn't arrive (Dev Mode)</p>
+                               <label className="block text-xs font-bold text-neutral-500 uppercase tracking-wider mb-2">Username</label>
+                               <input type="text" value={username} onChange={e => setUsername(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-white/30 transition-colors" placeholder="Choose a username" required />
                            </div>
                        )}
+                       <div>
+                           <label className="block text-xs font-bold text-neutral-500 uppercase tracking-wider mb-2">Email</label>
+                           <input type="email" value={email} onChange={e => setEmail(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-white/30 transition-colors" placeholder="Enter email" required />
+                       </div>
+                       <div>
+                           <label className="block text-xs font-bold text-neutral-500 uppercase tracking-wider mb-2">Password</label>
+                           <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-white/30 transition-colors" placeholder="Enter password" required minLength={6} />
+                       </div>
 
-                       <button type="submit" disabled={isSendingEmail} className="w-full bg-white text-black font-medium py-3 rounded-xl hover:bg-neutral-200 transition-colors mt-2 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center">
-                           {isSendingEmail ? <Loader2 className="animate-spin w-5 h-5" /> : (step === 'verify' ? "Verify Account" : step === 'signup' ? "Create Account" : "Sign In")}
+                       <button type="submit" disabled={loading} className="w-full bg-white text-black font-medium py-3 rounded-xl hover:bg-neutral-200 transition-colors mt-2 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center">
+                           {loading ? <Loader2 className="animate-spin w-5 h-5" /> : (isSignUp ? "Sign Up" : "Sign In")}
                        </button>
                    </form>
                    
-                   {step !== 'verify' && (
-                       <div className="mt-6 text-center">
-                           <button onClick={() => { setStep(step === 'signin' ? 'signup' : 'signin'); setError(''); }} className="text-sm text-neutral-400 hover:text-white transition-colors">
-                               {step === 'signin' ? "Don't have an account? Sign Up" : "Already have an account? Sign In"}
-                           </button>
-                       </div>
-                   )}
-                   {step === 'verify' && (
-                        <div className="mt-6 text-center">
-                            <button onClick={() => setStep('signup')} className="text-sm text-neutral-500 hover:text-white transition-colors">Wrong email? Back to Sign Up</button>
-                        </div>
-                   )}
+                   <div className="mt-6 text-center">
+                       <button onClick={() => { setIsSignUp(!isSignUp); setError(''); }} className="text-sm text-neutral-400 hover:text-white transition-colors">
+                           {isSignUp ? "Already have an account? Sign In" : "Don't have an account? Sign Up"}
+                       </button>
+                   </div>
               </motion.div>
           </motion.div>
       )
@@ -737,45 +735,57 @@ const App: React.FC = () => {
                 {activeViewMode === 'notes' && (
                     <div className="grid gap-6">
                         <AnimatePresence>
-                        {/* Always show card if content exists OR if we are curating (show skeleton) */}
-                        {(activeNote.curatedContent || isCurating) && (
-                            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="relative overflow-hidden rounded-[2rem] md:rounded-[2.5rem] bg-gradient-to-b from-neutral-800/50 to-neutral-900/50 backdrop-blur-2xl border border-white/5 p-5 md:p-8 shadow-2xl">
-                                <div className="absolute -top-20 -right-20 w-64 h-64 bg-white/5 rounded-full blur-[80px] pointer-events-none" />
-                                <div className="flex items-center justify-between mb-6">
-                                    <div className="flex items-center space-x-2 text-neutral-400 text-xs uppercase tracking-widest font-bold">
-                                        <div className="p-1 bg-white/10 rounded-md">
-                                            {isCurating && activeNote.curatedContent ? (
-                                                <Loader2 className="w-3 h-3 text-white animate-spin" />
-                                            ) : (
-                                                <Sparkles className="w-3 h-3 text-white" />
-                                            )}
-                                        </div>
-                                        <span>{isCurating && activeNote.curatedContent ? "Refining Note..." : "AI Curated Note"}</span>
+                        {/* Always show card if content exists OR if curating */}
+                        {activeNote.curatedContent || isCurating ? (
+                             <motion.div layout className="relative p-6 md:p-8 rounded-[2.5rem] bg-[#0A0A0A] border border-white/10 shadow-2xl overflow-hidden min-h-[400px]">
+                                <div className="absolute top-0 right-0 w-64 h-64 bg-white/5 rounded-full blur-[100px] pointer-events-none mix-blend-screen" />
+                                <div className="flex justify-between items-center mb-6 border-b border-white/5 pb-4">
+                                    <div className="flex items-center space-x-2 text-neutral-400">
+                                        {isCurating ? <Loader2 className="w-4 h-4 animate-spin text-white" /> : <Sparkles size={14} className="text-white" />}
+                                        <span className="text-xs font-bold tracking-widest uppercase">{isCurating ? 'Curating...' : 'AI Curated Note'}</span>
                                     </div>
-                                    <button onClick={() => handleCopy(activeNote.curatedContent, 'curated')} className="p-2 rounded-full hover:bg-white/10 text-neutral-400 hover:text-white transition-colors" title="Copy Text">{copiedId === 'curated' ? <Check size={16} /> : <Copy size={16} />}</button>
+                                    <button onClick={() => handleCopy(activeNote.curatedContent, activeNote.id)} className="p-2 hover:bg-white/10 rounded-full transition-colors text-neutral-400 hover:text-white" title="Copy to clipboard">
+                                        {copiedId === activeNote.id ? <Check size={16} /> : <Copy size={16} />}
+                                    </button>
                                 </div>
-                                <div className="relative z-10">
-                                    {isCurating && !activeNote.curatedContent ? (
-                                        <LoadingSkeleton />
-                                    ) : (
-                                        renderFormattedContent(activeNote.curatedContent || "")
-                                    )}
-                                </div>
-                            </motion.div>
-                        )}
+                                {activeNote.curatedContent ? (
+                                    <div className="prose prose-invert prose-p:text-neutral-300 prose-headings:text-white max-w-none">
+                                        {renderFormattedContent(activeNote.curatedContent)}
+                                    </div>
+                                ) : (
+                                    <LoadingSkeleton />
+                                )}
+                             </motion.div>
+                        ) : null}
                         </AnimatePresence>
 
-                        <div className="space-y-2">
-                            <button onClick={() => setIsTranscriptExpanded(!isTranscriptExpanded)} className="w-full flex items-center justify-between p-4 rounded-[2rem] border border-dashed border-neutral-800 bg-neutral-900/20 backdrop-blur-sm hover:bg-neutral-900/40 transition-colors text-left group">
-                                <div className="flex items-center space-x-2 text-neutral-500 text-xs uppercase tracking-widest font-bold pl-2 md:pl-4"><MoreHorizontal className="w-3 h-3" /><span>{isProcessingFile ? "File Content" : "Raw Transcript"}</span></div>
-                                <div className="flex items-center space-x-2 pr-2"><div className={`p-2 rounded-full text-neutral-500 transition-colors ${isTranscriptExpanded ? 'bg-white/10 text-white' : ''}`}>{isTranscriptExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</div></div>
+                        {/* Collapsible Live Transcript */}
+                        <div className="mt-4">
+                            <button 
+                                onClick={() => setIsTranscriptExpanded(!isTranscriptExpanded)}
+                                className="flex items-center space-x-2 text-xs font-bold tracking-widest text-neutral-500 uppercase hover:text-neutral-300 transition-colors mb-3"
+                            >
+                                <MoreHorizontal size={14} />
+                                <span>{isTranscriptExpanded ? 'Hide' : 'Show'} Live Transcript</span>
+                                {isTranscriptExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                             </button>
+                            
                             <AnimatePresence>
-                                {isTranscriptExpanded && (
-                                    <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
-                                        <div className="p-6 md:p-8 rounded-[2.5rem] border border-dashed border-neutral-800 bg-neutral-900/20 backdrop-blur-sm relative">
-                                            <div className="absolute top-4 right-4"><button onClick={() => handleCopy(activeNote.rawTranscript, 'raw')} className="p-2 rounded-full hover:bg-white/10 text-neutral-500 hover:text-white transition-colors" title="Copy Text">{copiedId === 'raw' ? <Check size={14} /> : <Copy size={14} />}</button></div>
-                                            <div className="text-neutral-400 text-sm md:text-base leading-relaxed font-mono whitespace-pre-wrap break-words">{activeNote.rawTranscript ? <FadeText text={activeNote.rawTranscript} /> : <span className="italic opacity-30">{isProcessingFile ? "Extracting text..." : "Listening for your voice..."}</span>}</div>
+                                {(isTranscriptExpanded || isListening) && (
+                                    <motion.div 
+                                        initial={{ height: 0, opacity: 0 }}
+                                        animate={{ height: 'auto', opacity: 1 }}
+                                        exit={{ height: 0, opacity: 0 }}
+                                        className="overflow-hidden"
+                                    >
+                                        <div className="p-6 md:p-8 rounded-[2.5rem] bg-[#0A0A0A]/50 border border-white/5 border-dashed">
+                                            <p className="font-mono text-sm md:text-base text-neutral-500 leading-relaxed whitespace-pre-wrap">
+                                                {activeNote.rawTranscript}
+                                                {transcriptRef.current && transcriptRef.current !== activeNote.rawTranscript && (
+                                                    <span className="text-white">{transcriptRef.current.replace(activeNote.rawTranscript, '')}</span>
+                                                )}
+                                                {isListening && !isPaused && <span className="inline-block w-2 h-4 bg-white/50 ml-1 animate-pulse align-middle" />}
+                                            </p>
                                         </div>
                                     </motion.div>
                                 )}
@@ -785,90 +795,113 @@ const App: React.FC = () => {
                 )}
 
                 {activeViewMode === 'mindmap' && (
-                    <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center w-full">
+                    <div className="w-full">
                         {isGeneratingMap ? (
-                            <div className="w-full h-[60vh] flex flex-col items-center justify-center rounded-[2.5rem] bg-neutral-900/20 border border-white/5 backdrop-blur-md">
-                                <Loader2 className="w-10 h-10 text-white/50 animate-spin mb-4" />
-                                <span className="text-neutral-400 font-light tracking-wide">Analysing connections...</span>
-                                <span className="text-neutral-600 text-xs mt-2">Generating Visual Map</span>
-                            </div>
-                        ) : activeNote.mindMapMermaid ? (
-                            <MindMap code={activeNote.mindMapMermaid} />
+                             <div className="w-full h-[60vh] flex flex-col items-center justify-center space-y-4 bg-[#0A0A0A] rounded-[2.5rem] border border-white/10">
+                                 <div className="relative">
+                                     <div className="w-16 h-16 rounded-full border-2 border-white/10 border-t-white animate-spin" />
+                                     <div className="absolute inset-0 flex items-center justify-center"><Network size={20} className="text-white/50" /></div>
+                                 </div>
+                                 <span className="text-neutral-400 font-light tracking-wide animate-pulse">Generating neural map...</span>
+                             </div>
                         ) : (
-                            <div className="h-64 flex flex-col items-center justify-center text-neutral-500">
-                                <span>Unable to generate Mind Map</span>
-                                <span className="text-xs mt-2">Try adding more content first.</span>
-                            </div>
+                             <MindMap code={activeNote.mindMapMermaid || ''} />
                         )}
-                    </motion.div>
+                    </div>
                 )}
 
                 {activeViewMode === 'flashcards' && (
-                    <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center">
-                         {isGeneratingCards ? (
-                            <div className="w-full h-[400px] flex flex-col items-center justify-center rounded-[2.5rem] bg-neutral-900/20 border border-white/5 backdrop-blur-md">
-                                <motion.div 
-                                  animate={{ rotateY: 180 }} 
-                                  transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }}
-                                  className="w-16 h-20 bg-white/10 rounded-lg border border-white/20 mb-6"
-                                />
-                                <span className="text-neutral-400 font-light tracking-wide">Synthesizing questions...</span>
-                                <span className="text-neutral-600 text-xs mt-2">Creating Study Deck</span>
-                            </div>
-                        ) : activeNote.flashcards ? (
-                            <Flashcards cards={JSON.parse(activeNote.flashcards)} />
-                        ) : (
-                            <div className="h-64 flex flex-col items-center justify-center text-neutral-500">
-                                <span>No flashcards available</span>
-                                <span className="text-xs mt-2">Try adding more content first.</span>
-                            </div>
-                        )}
-                    </motion.div>
+                    <div className="w-full flex justify-center">
+                        <div className="w-full max-w-3xl">
+                             {isGeneratingCards ? (
+                                <div className="w-full aspect-[16/9] flex flex-col items-center justify-center space-y-4 bg-[#0A0A0A] rounded-[2.5rem] border border-white/10">
+                                     <div className="relative">
+                                         <div className="w-16 h-16 rounded-full border-2 border-white/10 border-t-white animate-spin" />
+                                         <div className="absolute inset-0 flex items-center justify-center"><BookOpen size={20} className="text-white/50" /></div>
+                                     </div>
+                                     <span className="text-neutral-400 font-light tracking-wide animate-pulse">Creating study deck...</span>
+                                 </div>
+                             ) : (
+                                <Flashcards cards={activeNote.flashcards ? JSON.parse(activeNote.flashcards) : []} />
+                             )}
+                        </div>
+                    </div>
                 )}
-
             </motion.div>
         )}
       </main>
 
-      <DynamicIsland isRecording={isListening} isPaused={isPaused} isLoading={isProcessingFile} onStartRecording={startNewNote} onStopRecording={handleStopRecording} onTogglePause={togglePause} onSubmitText={handleTextSubmit} onSubmitFile={handleFileUpload} activeNoteId={activeNoteId} onRefine={handleRefine} />
-
+      {/* Dynamic Island Input */}
+      <DynamicIsland 
+        isRecording={isListening}
+        isPaused={isPaused}
+        onStartRecording={startNewNote} 
+        onStopRecording={handleStopRecording}
+        onTogglePause={togglePause}
+        onSubmitText={handleTextSubmit}
+        onSubmitFile={handleFileUpload}
+        isLoading={isProcessingFile || isCurating}
+        activeNoteId={activeNoteId}
+        onRefine={handleRefine}
+      />
+      
+      {/* Settings Modal */}
       <AnimatePresence>
-      {settingsOpen && (
-          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-md p-4" onClick={() => setSettingsOpen(false)}>
-              <motion.div initial={{ scale: 0.9, y: 20, opacity: 0 }} animate={{ scale: 1, y: 0, opacity: 1 }} exit={{ scale: 0.9, y: 20, opacity: 0 }} transition={{ type: "spring", damping: 25, stiffness: 300 }} className="w-full max-w-sm bg-[#111] border border-white/10 rounded-3xl p-6 shadow-2xl overflow-hidden relative" onClick={(e) => e.stopPropagation()}>
-                  <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
-                  <div className="flex justify-between items-center mb-6"><h2 className="text-lg font-medium text-white">Settings</h2><button onClick={() => setSettingsOpen(false)} className="text-neutral-500 hover:text-white transition-colors">Close</button></div>
-                  
-                  {currentUser && (
-                      <div className="mb-6 p-4 bg-white/5 rounded-2xl flex items-center justify-between">
-                          <div className="flex items-center space-x-3">
-                              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold">{currentUser.username[0].toUpperCase()}</div>
-                              <div>
-                                  <div className="text-sm font-bold text-white">{currentUser.username}</div>
-                                  <div className="text-xs text-neutral-500">{currentUser.email}</div>
-                              </div>
-                          </div>
-                          <button onClick={handleLogout} className="p-2 text-red-400 hover:bg-red-500/10 rounded-full"><LogOut size={18} /></button>
-                      </div>
-                  )}
+        {settingsOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setSettingsOpen(false)}>
+                <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }} className="bg-[#111] border border-white/10 p-6 md:p-8 rounded-3xl w-full max-w-md shadow-2xl" onClick={e => e.stopPropagation()}>
+                    <div className="flex items-center justify-between mb-6">
+                        <h2 className="text-xl font-light text-white">Settings</h2>
+                        <button onClick={() => setSettingsOpen(false)} className="p-2 hover:bg-white/10 rounded-full transition-colors"><X size={20} className="text-neutral-400" /></button>
+                    </div>
 
-                  {apiError && <div className="mb-4 p-3 bg-red-900/20 border border-red-500/20 rounded-xl text-red-400 text-sm flex items-start space-x-2"><span className="font-bold">Error:</span><span>Invalid API Key or Service Unavailable (401).</span></div>}
-                  <div className="mb-4">
-                      <label className="text-xs uppercase tracking-wider text-neutral-500 font-bold mb-3 block">Curation Style</label>
-                      <div className="space-y-2">
-                          {(['default', 'academic', 'creative', 'meeting'] as NoteStyle[]).map((style) => {
-                              const Icon = FormatIcons[style]; const isActive = preferredStyle === style;
-                              return <button key={style} onClick={() => setPreferredStyle(style)} className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all duration-300 ${isActive ? 'bg-white text-black border-white shadow-[0_0_20px_-5px_rgba(255,255,255,0.3)]' : 'bg-neutral-900/50 text-neutral-400 border-transparent hover:bg-neutral-800'}`}><div className="flex items-center space-x-3"><Icon className={`w-5 h-5 ${isActive ? 'text-black' : 'text-neutral-500'}`} /><span className="capitalize font-medium">{style}</span></div>{isActive && <motion.div layoutId="activeDot" className="w-2 h-2 rounded-full bg-black" />}</button>
-                          })}
-                      </div>
-                  </div>
-              </motion.div>
-          </motion.div>
-      )}
-      </AnimatePresence>
+                    <div className="space-y-6">
+                        {/* User Profile Section */}
+                        {currentUser && (
+                            <div className="p-4 rounded-2xl bg-white/5 border border-white/5 flex items-center space-x-4">
+                                <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-lg">
+                                    {currentUser.username.charAt(0).toUpperCase()}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                        <h3 className="text-white font-medium truncate">{currentUser.username}</h3>
+                                        {currentUser.isVerified && <Check size={14} className="text-green-400" />}
+                                    </div>
+                                    <p className="text-xs text-neutral-400 truncate">{currentUser.email}</p>
+                                </div>
+                                <button onClick={handleLogout} className="p-2 text-neutral-400 hover:text-white hover:bg-white/10 rounded-full transition-colors" title="Log Out">
+                                    <LogOut size={18} />
+                                </button>
+                            </div>
+                        )}
 
-      <AnimatePresence>
-          {showAuthModal && <AuthModal />}
+                        <div>
+                            <label className="text-xs font-bold text-neutral-500 uppercase tracking-wider mb-3 block">Note Style</label>
+                            <div className="grid grid-cols-2 gap-3">
+                                {(['default', 'academic', 'creative', 'meeting'] as NoteStyle[]).map(style => (
+                                    <button
+                                        key={style}
+                                        onClick={() => setPreferredStyle(style)}
+                                        className={`p-3 rounded-xl border text-sm font-medium flex items-center space-x-2 transition-all ${preferredStyle === style ? 'bg-white text-black border-white' : 'bg-white/5 border-white/5 text-neutral-400 hover:bg-white/10 hover:text-white'}`}
+                                    >
+                                        {React.createElement(FormatIcons[style], { size: 16 })}
+                                        <span className="capitalize">{style}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        {apiError && (
+                             <div className="p-4 bg-red-900/20 border border-red-500/20 rounded-xl">
+                                 <p className="text-red-400 text-xs leading-relaxed">
+                                     <strong>API Error:</strong> The system is currently experiencing high traffic or the key is invalid. Please try again later.
+                                 </p>
+                             </div>
+                        )}
+                    </div>
+                </motion.div>
+            </div>
+        )}
       </AnimatePresence>
     </div>
   );

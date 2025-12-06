@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Flow</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/alasql@4.0.0/dist/alasql.min.js"></script>
     <style>
       @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
       
@@ -45,20 +44,21 @@
       }
     </style>
     <script type="importmap">
-    {
-      "imports": {
-        "lucide-react": "https://esm.sh/lucide-react@0.344.0",
-        "react-dom/": "https://esm.sh/react-dom@18.2.0/",
-        "react/": "https://esm.sh/react@18.2.0/",
-        "react": "https://esm.sh/react@18.2.0",
-        "framer-motion": "https://esm.sh/framer-motion@10.16.4?external=react,react-dom",
-        "pdfjs-dist": "https://esm.sh/pdfjs-dist@3.11.174",
-        "mammoth": "https://esm.sh/mammoth@1.6.0",
-        "mermaid": "https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.esm.min.mjs",
-        "@emailjs/browser": "https://esm.sh/@emailjs/browser@3.11.0"
-      }
-    }
-    </script>
+{
+  "imports": {
+    "lucide-react": "https://esm.sh/lucide-react@0.344.0",
+    "react-dom/": "https://esm.sh/react-dom@18.2.0/",
+    "react/": "https://esm.sh/react@18.2.0/",
+    "react": "https://esm.sh/react@18.2.0",
+    "framer-motion": "https://esm.sh/framer-motion@10.16.4?external=react,react-dom",
+    "pdfjs-dist": "https://esm.sh/pdfjs-dist@3.11.174",
+    "mammoth": "https://esm.sh/mammoth@1.6.0",
+    "mermaid": "https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.esm.min.mjs",
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2.39.7",
+    "@emailjs/browser": "https://aistudiocdn.com/@emailjs/browser@^4.4.1"
+  }
+}
+</script>
     <script type="module">
         // Set worker source for PDF.js
         import * as pdfjsLib from 'pdfjs-dist';

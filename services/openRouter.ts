@@ -76,8 +76,8 @@ export const refineNote = async (currentContent: string, instructions: string): 
 export const generateMindMap = async (content: string): Promise<string> => {
     try {
         const raw = await makeRequest(
-            "You are a data visualization expert. Create a concise mermaid.js graph.",
-            `NOTES:\n${content}\n\nINSTRUCTIONS:\n- Create a 'graph TB' (Top-to-Bottom) flowchart.\n- STRUCTURE:\n  1. Root Node: The Main Topic.\n  2. Branches: Major Headings.\n  3. Leaves: Key Concepts (Keywords only).\n- CONTENT: Keep labels SHORT and CONCISE (1-4 words max). Do not use long sentences.\n- SYNTAX RULES:\n  1. Use unique alphanumeric IDs (e.g. A1, B2).\n  2. NO double quotes (") inside text.\n  3. NO parentheses () inside text. Replace with dashes.\n  4. NO brackets [] inside the label text.\n  5. Do NOT include style/classDefs.\n- Output ONLY the mermaid code.`
+            "You are a data visualization expert. Create a detailed educational mermaid.js graph.",
+            `NOTES:\n${content}\n\nINSTRUCTIONS:\n- Create a 'graph TB' (Top-to-Bottom) flowchart.\n- STRUCTURE:\n  1. Root Node: The Main Topic.\n  2. Branches: Major Headings.\n  3. Leaves: EDUCATIONAL CONCEPTS. Go into detail. Instead of just keywords, include short definitions, facts, or nuances.\n- CONTENT: Nodes should be informative for learning (e.g., [Mitosis: Process of cell division]).\n- SYNTAX RULES:\n  1. Use unique alphanumeric IDs (e.g. A1, B2).\n  2. ALWAYS use square brackets for node text: id[Label]. DO NOT use parentheses () or circle nodes.\n  3. NO double quotes (") inside text.\n  4. Do NOT include style/classDefs.\n- Output ONLY the mermaid code.`
         );
         
         // Clean up markdown code blocks if present
@@ -96,10 +96,12 @@ export const generateMindMap = async (content: string): Promise<string> => {
         cleaned = cleaned.replace(/"/g, "'");
 
         // Aggressive sanitize: Remove parentheses to prevent 'got PS' errors in Mermaid
+        // This replaces '(' and ')' with empty strings or benign characters
         cleaned = cleaned.replace(/\(/g, ' - ').replace(/\)/g, '');
 
-        // Prepend valid header and custom style for the "vertical, less cluttered" look
-        const style = "classDef default fill:#1a1a1a,stroke:#444,stroke-width:1px,color:#fff,rx:20,ry:20,font-family:Inter,padding:15px,line-height:1.2;";
+        // Prepend valid header and custom style for the "vertical, detailed" look
+        // We use rx:5 for a more card-like rectangular look suitable for text
+        const style = "classDef default fill:#1a1a1a,stroke:#444,stroke-width:1px,color:#fff,rx:5,ry:5,font-family:Inter,padding:12px,line-height:1.4;";
         
         cleaned = `graph TB\n${style}\n${cleaned}`;
         
