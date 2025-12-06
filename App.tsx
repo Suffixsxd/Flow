@@ -121,6 +121,7 @@ const App: React.FC = () => {
   useEffect(() => {
     setActiveViewMode('notes');
     setIsCurating(false);
+    setIsTranscriptExpanded(false);
   }, [activeNoteId]);
 
   // Sync transcript ref
@@ -226,7 +227,7 @@ const App: React.FC = () => {
     setNotes(prev => [newNote, ...prev]);
     setActiveNoteId(newNote.id);
     setIsProcessingFile(true);
-    setIsTranscriptExpanded(true);
+    setIsTranscriptExpanded(false);
     setIsCurating(true);
 
     try {
@@ -448,8 +449,8 @@ const App: React.FC = () => {
   if (showLanding) {
       return (
           <div className="h-screen w-full flex flex-col items-center justify-center relative overflow-hidden">
-              <motion.div animate={{ scale: [1, 1.2, 1], opacity: [0.3, 0.5, 0.3], rotate: [0, 90, 0] }} transition={{ duration: 15, repeat: Infinity, ease: "easeInOut" }} className="absolute top-[-20%] left-[-10%] w-[300px] md:w-[600px] h-[300px] md:h-[600px] bg-purple-500/10 rounded-full blur-[80px] md:blur-[120px] pointer-events-none" />
-              <motion.div animate={{ scale: [1, 1.1, 1], opacity: [0.2, 0.4, 0.2], x: [0, 50, 0] }} transition={{ duration: 20, repeat: Infinity, ease: "easeInOut" }} className="absolute bottom-[-10%] right-[-10%] w-[300px] md:w-[600px] h-[300px] md:h-[600px] bg-blue-500/10 rounded-full blur-[80px] md:blur-[120px] pointer-events-none" />
+              <motion.div animate={{ scale: [1, 1.2, 1], opacity: [0.3, 0.5, 0.3], rotate: [0, 90, 0] }} transition={{ duration: 15, repeat: Infinity, ease: "easeInOut" }} className="absolute top-[-20%] left-[-10%] w-[300px] md:w-[600px] h-[300px] md:h-[600px] bg-purple-600/30 rounded-full blur-[120px] pointer-events-none mix-blend-screen" />
+              <motion.div animate={{ scale: [1, 1.1, 1], opacity: [0.2, 0.4, 0.2], x: [0, 50, 0] }} transition={{ duration: 20, repeat: Infinity, ease: "easeInOut" }} className="absolute bottom-[-10%] right-[-10%] w-[300px] md:w-[600px] h-[300px] md:h-[600px] bg-blue-600/30 rounded-full blur-[120px] pointer-events-none mix-blend-screen" />
               <div className="relative z-10 flex flex-col items-center p-8 text-center">
                   <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 1, type: "spring" }} className="mb-8 p-5 md:p-6 rounded-[2rem] bg-gradient-to-tr from-white/5 to-transparent border border-white/10 backdrop-blur-2xl shadow-2xl"><Logo className="w-12 h-12 md:w-16 md:h-16 text-white/90" /></motion.div>
                   <motion.h1 initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3, duration: 0.8 }} className="text-5xl sm:text-6xl md:text-8xl font-thin tracking-tighter text-transparent bg-clip-text bg-gradient-to-b from-white via-white to-white/40 mb-6">Flow</motion.h1>
@@ -496,9 +497,9 @@ const App: React.FC = () => {
         {!activeNoteId && (
             <div className="space-y-4">
                 {notes.length === 0 ? (
-                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 1 }} className="flex flex-col items-center justify-center h-[60vh] relative overflow-hidden">
-                        <motion.div animate={{ scale: [1, 1.2, 1], opacity: [0.3, 0.5, 0.3], rotate: [0, 90, 0] }} transition={{ duration: 10, repeat: Infinity, ease: "easeInOut" }} className="absolute top-1/4 -left-10 w-48 h-48 md:w-64 md:h-64 bg-purple-500/20 rounded-full blur-[80px] pointer-events-none" />
-                        <motion.div animate={{ scale: [1, 1.1, 1], opacity: [0.2, 0.4, 0.2], x: [0, 30, 0] }} transition={{ duration: 15, repeat: Infinity, ease: "easeInOut" }} className="absolute bottom-1/3 -right-10 w-48 h-48 md:w-64 md:h-64 bg-blue-500/10 rounded-full blur-[80px] pointer-events-none" />
+                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 1 }} className="flex flex-col items-center justify-center h-[60vh] relative">
+                        <motion.div animate={{ scale: [1, 1.2, 1], opacity: [0.3, 0.5, 0.3], rotate: [0, 90, 0] }} transition={{ duration: 10, repeat: Infinity, ease: "easeInOut" }} className="absolute top-1/4 -left-10 w-48 h-48 md:w-64 md:h-64 bg-purple-600/30 rounded-full blur-[100px] pointer-events-none mix-blend-screen" />
+                        <motion.div animate={{ scale: [1, 1.1, 1], opacity: [0.2, 0.4, 0.2], x: [0, 30, 0] }} transition={{ duration: 15, repeat: Infinity, ease: "easeInOut" }} className="absolute bottom-1/3 -right-10 w-48 h-48 md:w-64 md:h-64 bg-blue-600/30 rounded-full blur-[100px] pointer-events-none mix-blend-screen" />
                         <motion.div initial={{ scale: 0.9, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} transition={{ type: "spring", duration: 0.8 }} className="z-10 flex flex-col items-center text-center"><h2 className="text-3xl md:text-4xl font-light tracking-tighter text-neutral-300">No notes yet</h2><p className="mt-4 text-neutral-500 font-light tracking-wide text-sm max-w-[200px]">Tap the + button to start capturing.</p></motion.div>
                     </motion.div>
                 ) : (

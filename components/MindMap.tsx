@@ -30,9 +30,9 @@ export const MindMap: React.FC<MindMapProps> = ({ code }) => {
           fontFamily: 'Inter, sans-serif',
           flowchart: {
               curve: 'basis',
-              padding: 60, // More breathing room inside graph
-              nodeSpacing: 80, // More space between nodes horizontally
-              rankSpacing: 100, // More space between levels vertically
+              padding: 50, // Increased padding inside nodes for detailed text
+              nodeSpacing: 200, // Significantly increased horizontal space for wider detailed nodes
+              rankSpacing: 200, // Increased vertical space for depth
               useMaxWidth: false,
               htmlLabels: true,
           }
@@ -108,7 +108,7 @@ export const MindMap: React.FC<MindMapProps> = ({ code }) => {
             <motion.div
                 className="w-full h-full cursor-grab active:cursor-grabbing flex items-center justify-center origin-center"
                 drag
-                dragConstraints={{ left: -2000, right: 2000, top: -2000, bottom: 2000 }}
+                dragConstraints={{ left: -3000, right: 3000, top: -3000, bottom: 3000 }}
                 dragMomentum={false}
             >
                 <motion.div 

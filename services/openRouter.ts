@@ -76,8 +76,8 @@ export const refineNote = async (currentContent: string, instructions: string): 
 export const generateMindMap = async (content: string): Promise<string> => {
     try {
         const raw = await makeRequest(
-            "You are a data visualization expert. Create a Mermaid.js flowchart representing the structure of the provided notes.",
-            `NOTES:\n${content}\n\nINSTRUCTIONS:\n- Create a 'graph TB' (Top-to-Bottom) flowchart to act as a mind map.\n- Use a centralized Root node at the top.\n- Focus on high-level concepts to avoid clutter. Limit depth to 3 levels.\n- Use minimal text for labels (1-4 words max).\n- IMPORTANT: Use unique alphanumeric IDs for every node (e.g. A[Topic]).\n- INCORRECT: [Topic] --> [Sub]\n- CORRECT: A[Topic] --> B[Sub]\n- Do NOT include any style definitions or classDefs in your output, I will handle that.\n- Output ONLY the mermaid code.`
+            "You are a data visualization expert and educator. Create a detailed mermaid.js graph for learning purposes.",
+            `NOTES:\n${content}\n\nINSTRUCTIONS:\n- Create a 'graph TB' (Top-to-Bottom) flowchart.\n- EDUCATIONAL FOCUS: Nodes must be descriptive. Do not use single words. Include definitions, facts, or context.\n- Example: Instead of [mitochondria], use [Mitochondria: Powerhouse of the cell, generates ATP].\n- Structure: Core Topic -> Key Concepts -> Detailed Explanations.\n- IMPORTANT: Use unique alphanumeric IDs (e.g. Node1[Label]).\n- Do NOT use double quotes (") inside labels.\n- Do NOT use parentheses () inside labels as they break syntax. Use ' - ' instead.\n- Do NOT use brackets [] inside the text content of a node.\n- Do NOT include any style definitions or classDefs in your output, I will handle that.\n- Output ONLY the mermaid code.`
         );
         
         // Clean up markdown code blocks if present
@@ -92,9 +92,16 @@ export const generateMindMap = async (content: string): Promise<string> => {
         // Remove lines that don't look like connections or nodes (cleanup hallucinations)
         cleaned = cleaned.split('\n').filter(line => line.includes('-->') || line.includes('[') || line.trim() === '').join('\n');
         
+        // Global sanitize: replace double quotes with single quotes to prevent syntax errors
+        cleaned = cleaned.replace(/"/g, "'");
+
+        // Aggressive sanitize: Remove parentheses to prevent 'got PS' errors in Mermaid
+        // We replace '(' with ' - ' and ')' with '' to keep text readable but safe
+        cleaned = cleaned.replace(/\(/g, ' - ').replace(/\)/g, '');
+
         // Prepend valid header and custom style for the "vertical, less cluttered" look
         // Dark pill-shaped nodes with decent padding
-        const style = "classDef default fill:#1a1a1a,stroke:#444,stroke-width:1px,color:#fff,rx:20,ry:20,font-family:Inter,padding:12px;";
+        const style = "classDef default fill:#1a1a1a,stroke:#444,stroke-width:1px,color:#fff,rx:20,ry:20,font-family:Inter,padding:20px,line-height:1.5;";
         
         cleaned = `graph TB\n${style}\n${cleaned}`;
         
