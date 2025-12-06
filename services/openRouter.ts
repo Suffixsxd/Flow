@@ -1,7 +1,7 @@
 import { NoteStyle, Flashcard } from '../types';
 
 const MODEL = "openai/gpt-oss-20b:free";
-const API_KEY = "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";
+const API_KEY = "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";
 
 const getSystemPrompt = (style: NoteStyle): string => {
   switch (style) {
