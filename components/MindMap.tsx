@@ -10,7 +10,7 @@ interface MindMapProps {
 export const MindMap: React.FC<MindMapProps> = ({ code }) => {
   const [svg, setSvg] = useState<string>('');
   const [error, setError] = useState<boolean>(false);
-  const [scale, setScale] = useState(0.8); // Start slightly zoomed out for big maps
+  const [scale, setScale] = useState(0.9);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -30,9 +30,9 @@ export const MindMap: React.FC<MindMapProps> = ({ code }) => {
           fontFamily: 'Inter, sans-serif',
           flowchart: {
               curve: 'basis',
-              padding: 50, // Increased padding inside nodes for detailed text
-              nodeSpacing: 200, // Significantly increased horizontal space for wider detailed nodes
-              rankSpacing: 200, // Increased vertical space for depth
+              padding: 15, // Compact padding
+              nodeSpacing: 50, // Standard spacing for keywords
+              rankSpacing: 80, // Standard vertical spacing
               useMaxWidth: false,
               htmlLabels: true,
           }
@@ -65,7 +65,7 @@ export const MindMap: React.FC<MindMapProps> = ({ code }) => {
 
   const handleZoomIn = () => setScale(prev => Math.min(prev + 0.2, 4));
   const handleZoomOut = () => setScale(prev => Math.max(prev - 0.2, 0.2));
-  const handleReset = () => setScale(0.8);
+  const handleReset = () => setScale(0.9);
 
   const handleWheel = (e: React.WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {

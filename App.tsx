@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Settings, ChevronLeft, MoreHorizontal, Copy, Check, Clock, Sparkles, MicOff, Trash2, ArrowRight, Download, ChevronDown, ChevronUp, Network, BookOpen, FileText, Loader2, Wand2 } from 'lucide-react';
+import { Settings, ChevronLeft, MoreHorizontal, Copy, Check, Clock, Sparkles, MicOff, Trash2, ArrowRight, Download, ChevronDown, ChevronUp, Network, BookOpen, FileText, Loader2, Wand2, LogIn, LogOut, User as UserIcon, X, Mail } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { DynamicIsland } from './components/DynamicIsland';
 import { FadeText } from './components/FadeText';
@@ -8,8 +8,9 @@ import { Flashcards } from './components/Flashcards';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
 import { curateNote, refineNote, generateMindMap, generateFlashcards } from './services/openRouter';
 import { parseMultipleFiles } from './services/fileParser';
-import { Note, NoteStyle, Flashcard } from './types';
-import { initDB, getNotes, addNote, updateNote, updateMindMap, updateFlashcards, deleteNote as deleteNoteDB } from './services/db';
+import { Note, NoteStyle, Flashcard, User } from './types';
+import { initDB, getNotes, addNote, updateNote, updateMindMap, updateFlashcards, deleteNote as deleteNoteDB, loginUser, registerUser, verifyUser } from './services/db';
+import { sendVerificationEmail } from './services/email';
 
 // Icons for formatting
 const FormatIcons = {
@@ -77,6 +78,9 @@ const LoadingSkeleton = () => (
 const App: React.FC = () => {
   // State
   const [showLanding, setShowLanding] = useState(true);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  
   const [notes, setNotes] = useState<Note[]>([]);
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
   const [activeViewMode, setActiveViewMode] = useState<ViewMode>('notes');
@@ -110,12 +114,26 @@ const App: React.FC = () => {
   const lastProcessedLengthRef = useRef(0);
   const transcriptRef = useRef(transcript);
 
-  // Initialize DB and load notes
+  // Initialize DB and try to restore session
   useEffect(() => {
     initDB();
-    const savedNotes = getNotes();
-    setNotes(savedNotes);
+    const storedUser = localStorage.getItem('flow_user');
+    if (storedUser) {
+        try {
+            setCurrentUser(JSON.parse(storedUser));
+        } catch(e) {}
+    }
   }, []);
+
+  // Load notes when user changes
+  useEffect(() => {
+    if (currentUser) {
+        const savedNotes = getNotes(currentUser.id);
+        setNotes(savedNotes);
+    } else {
+        setNotes([]);
+    }
+  }, [currentUser]);
 
   // Reset view mode when switching notes
   useEffect(() => {
@@ -136,7 +154,7 @@ const App: React.FC = () => {
 
   // Handle live curation loop
   useEffect(() => {
-    if (isListening && !isPaused && activeNoteId) {
+    if (isListening && !isPaused && activeNoteId && currentUser) {
         const interval = setInterval(async () => {
             const currentTranscript = transcriptRef.current;
             const newChars = currentTranscript.length - lastProcessedLengthRef.current;
@@ -173,11 +191,25 @@ const App: React.FC = () => {
         if (processingRef.current) clearInterval(processingRef.current);
     }
     return () => { if (processingRef.current) clearInterval(processingRef.current); };
-  }, [isListening, isPaused, activeNoteId, preferredStyle]);
+  }, [isListening, isPaused, activeNoteId, preferredStyle, currentUser]);
+
+  // Auth Functions
+  const handleLogout = () => {
+      setCurrentUser(null);
+      localStorage.removeItem('flow_user');
+      setShowLanding(true);
+      setNotes([]);
+      setActiveNoteId(null);
+  };
 
   const startNewNote = (title: string) => {
+    if (!currentUser) {
+        setShowAuthModal(true);
+        return;
+    }
     const newNote: Note = {
       id: Date.now().toString(),
+      userId: currentUser.id,
       title,
       rawTranscript: '',
       curatedContent: '',
@@ -215,8 +247,13 @@ const App: React.FC = () => {
   };
 
   const handleTextSubmit = async (title: string, text: string) => {
+    if (!currentUser) {
+        setShowAuthModal(true);
+        return;
+    }
     const newNote: Note = {
       id: Date.now().toString(),
+      userId: currentUser.id,
       title,
       rawTranscript: text,
       curatedContent: '',
@@ -265,12 +302,17 @@ const App: React.FC = () => {
   };
 
   const handleFileUpload = async (title: string, files: File[]) => {
+    if (!currentUser) {
+        setShowAuthModal(true);
+        return;
+    }
     setIsProcessingFile(true);
     setIsCurating(true);
     try {
         const text = await parseMultipleFiles(files);
         const newNote: Note = {
             id: Date.now().toString(),
+            userId: currentUser.id,
             title,
             rawTranscript: text,
             curatedContent: '',
@@ -442,25 +484,167 @@ const App: React.FC = () => {
     return elements;
   };
 
+  const AuthModal = () => {
+      const [step, setStep] = useState<'signin' | 'signup' | 'verify'>('signin');
+      const [username, setUsername] = useState('');
+      const [email, setEmail] = useState('');
+      const [password, setPassword] = useState('');
+      const [verificationCode, setVerificationCode] = useState('');
+      const [isSendingEmail, setIsSendingEmail] = useState(false);
+      const [error, setError] = useState('');
+
+      const handleSubmit = async (e: React.FormEvent) => {
+          e.preventDefault();
+          setError('');
+          try {
+              if (step === 'signup') {
+                  // 1. Register User in DB (Generates Code)
+                  const code = registerUser(username, email, password);
+                  
+                  // 2. Send Email
+                  setIsSendingEmail(true);
+                  try {
+                      await sendVerificationEmail(email, code, username);
+                      setStep('verify');
+                  } catch (mailError: any) {
+                      setError("Failed to send email. Check console for code (Dev Mode).");
+                  } finally {
+                      setIsSendingEmail(false);
+                  }
+
+              } else if (step === 'signin') {
+                  const user = loginUser(username, password);
+                  setCurrentUser(user);
+                  localStorage.setItem('flow_user', JSON.stringify(user));
+                  setShowAuthModal(false);
+                  setShowLanding(false);
+              } else if (step === 'verify') {
+                  verifyUser(email, verificationCode);
+                  const user = loginUser(username, password); // Auto login after verify
+                  setCurrentUser(user);
+                  localStorage.setItem('flow_user', JSON.stringify(user));
+                  setShowAuthModal(false);
+                  setShowLanding(false);
+              }
+          } catch (e: any) {
+              setError(e.message || "Authentication failed");
+              setIsSendingEmail(false);
+          }
+      };
+
+      return (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-xl p-4">
+              <motion.div initial={{ scale: 0.9, y: 20 }} animate={{ scale: 1, y: 0 }} className="w-full max-w-md bg-[#111] border border-white/10 rounded-3xl p-8 shadow-2xl relative overflow-hidden">
+                   <button onClick={() => setShowAuthModal(false)} className="absolute top-4 right-4 p-2 text-neutral-500 hover:text-white"><X size={20} /></button>
+                   <div className="flex flex-col items-center mb-6">
+                        <div className="w-12 h-12 bg-white/10 rounded-2xl flex items-center justify-center mb-4"><Logo className="w-6 h-6 text-white" /></div>
+                        <h2 className="text-2xl font-light text-white">
+                            {step === 'verify' ? "Check your email" : step === 'signup' ? "Create Account" : "Welcome Back"}
+                        </h2>
+                        <p className="text-neutral-500 text-sm mt-1 text-center">
+                            {step === 'verify' ? `We sent a code to ${email}` : "Sign in to sync your notes"}
+                        </p>
+                   </div>
+                   
+                   {error && <div className="mb-4 p-3 bg-red-900/20 text-red-400 text-sm rounded-xl text-center border border-red-500/20">{error}</div>}
+
+                   <form onSubmit={handleSubmit} className="space-y-4">
+                       {step !== 'verify' && (
+                           <>
+                               <div>
+                                   <label className="block text-xs font-bold text-neutral-500 uppercase tracking-wider mb-2">Username</label>
+                                   <input type="text" value={username} onChange={e => setUsername(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-white/30 transition-colors" placeholder="Enter username" required />
+                               </div>
+                               {step === 'signup' && (
+                                   <div>
+                                       <label className="block text-xs font-bold text-neutral-500 uppercase tracking-wider mb-2">Email</label>
+                                       <input type="email" value={email} onChange={e => setEmail(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-white/30 transition-colors" placeholder="Enter email" required />
+                                   </div>
+                               )}
+                               <div>
+                                   <label className="block text-xs font-bold text-neutral-500 uppercase tracking-wider mb-2">Password</label>
+                                   <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-white/30 transition-colors" placeholder="Enter password" required />
+                               </div>
+                           </>
+                       )}
+
+                       {step === 'verify' && (
+                           <div>
+                               <label className="block text-xs font-bold text-neutral-500 uppercase tracking-wider mb-2">Verification Code</label>
+                               <input type="text" value={verificationCode} onChange={e => setVerificationCode(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-white outline-none focus:border-white/30 transition-colors text-center text-2xl tracking-[0.5em] font-mono" placeholder="000000" maxLength={6} required />
+                               <p className="text-center text-xs text-neutral-500 mt-2">Check your browser console if email doesn't arrive (Dev Mode)</p>
+                           </div>
+                       )}
+
+                       <button type="submit" disabled={isSendingEmail} className="w-full bg-white text-black font-medium py-3 rounded-xl hover:bg-neutral-200 transition-colors mt-2 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center">
+                           {isSendingEmail ? <Loader2 className="animate-spin w-5 h-5" /> : (step === 'verify' ? "Verify Account" : step === 'signup' ? "Create Account" : "Sign In")}
+                       </button>
+                   </form>
+                   
+                   {step !== 'verify' && (
+                       <div className="mt-6 text-center">
+                           <button onClick={() => { setStep(step === 'signin' ? 'signup' : 'signin'); setError(''); }} className="text-sm text-neutral-400 hover:text-white transition-colors">
+                               {step === 'signin' ? "Don't have an account? Sign Up" : "Already have an account? Sign In"}
+                           </button>
+                       </div>
+                   )}
+                   {step === 'verify' && (
+                        <div className="mt-6 text-center">
+                            <button onClick={() => setStep('signup')} className="text-sm text-neutral-500 hover:text-white transition-colors">Wrong email? Back to Sign Up</button>
+                        </div>
+                   )}
+              </motion.div>
+          </motion.div>
+      )
+  };
+
   if (!browserSupportsSpeechRecognition) {
       return <div className="h-screen w-full flex items-center justify-center text-white">Browser not supported. Please use Chrome.</div>
   }
 
+  // --- LANDING PAGE ---
   if (showLanding) {
       return (
           <div className="h-screen w-full flex flex-col items-center justify-center relative overflow-hidden">
+               {/* Header Login Button */}
+               {!currentUser && (
+                   <div className="absolute top-6 right-6 z-20">
+                       <button onClick={() => setShowAuthModal(true)} className="px-6 py-2.5 rounded-full bg-white/5 border border-white/10 hover:bg-white/10 backdrop-blur-md text-sm font-medium transition-colors">Sign In</button>
+                   </div>
+               )}
+
               <motion.div animate={{ scale: [1, 1.2, 1], opacity: [0.3, 0.5, 0.3], rotate: [0, 90, 0] }} transition={{ duration: 15, repeat: Infinity, ease: "easeInOut" }} className="absolute top-[-20%] left-[-10%] w-[300px] md:w-[600px] h-[300px] md:h-[600px] bg-purple-600/30 rounded-full blur-[120px] pointer-events-none mix-blend-screen" />
               <motion.div animate={{ scale: [1, 1.1, 1], opacity: [0.2, 0.4, 0.2], x: [0, 50, 0] }} transition={{ duration: 20, repeat: Infinity, ease: "easeInOut" }} className="absolute bottom-[-10%] right-[-10%] w-[300px] md:w-[600px] h-[300px] md:h-[600px] bg-blue-600/30 rounded-full blur-[120px] pointer-events-none mix-blend-screen" />
+              
               <div className="relative z-10 flex flex-col items-center p-8 text-center">
                   <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 1, type: "spring" }} className="mb-8 p-5 md:p-6 rounded-[2rem] bg-gradient-to-tr from-white/5 to-transparent border border-white/10 backdrop-blur-2xl shadow-2xl"><Logo className="w-12 h-12 md:w-16 md:h-16 text-white/90" /></motion.div>
                   <motion.h1 initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3, duration: 0.8 }} className="text-5xl sm:text-6xl md:text-8xl font-thin tracking-tighter text-transparent bg-clip-text bg-gradient-to-b from-white via-white to-white/40 mb-6">Flow</motion.h1>
                   <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6, duration: 0.8 }} className="text-neutral-400 font-light text-base md:text-lg tracking-wide mb-12 max-w-xs md:max-w-md">Capture thoughts. Curated by AI.<br /><span className="text-neutral-600 text-sm mt-2 block">Voice, text, or file.</span></motion.p>
-                  <motion.button initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} transition={{ delay: 0.8, type: "spring" }} onClick={() => setShowLanding(false)} className="group relative flex items-center space-x-3 bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/10 px-8 py-4 rounded-full transition-all"><span className="text-white font-medium tracking-wide">Enter Flow</span><ArrowRight className="w-4 h-4 text-white/70 group-hover:translate-x-1 transition-transform" /></motion.button>
+                  
+                  <motion.button 
+                    initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} transition={{ delay: 0.8, type: "spring" }} 
+                    onClick={() => {
+                        if (currentUser) {
+                            setShowLanding(false);
+                        } else {
+                            setShowAuthModal(true);
+                        }
+                    }} 
+                    className="group relative flex items-center space-x-3 bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/10 px-8 py-4 rounded-full transition-all"
+                  >
+                      <span className="text-white font-medium tracking-wide">Enter Flow</span>
+                      <ArrowRight className="w-4 h-4 text-white/70 group-hover:translate-x-1 transition-transform" />
+                  </motion.button>
               </div>
+
+              <AnimatePresence>
+                  {showAuthModal && <AuthModal />}
+              </AnimatePresence>
           </div>
       );
   }
 
+  // --- MAIN APP ---
   return (
     <div className="min-h-screen text-white relative selection:bg-white/20">
       <header className="fixed top-0 left-0 right-0 h-20 md:h-24 z-40 flex items-center justify-center px-4 md:px-6 pointer-events-none">
@@ -654,6 +838,20 @@ const App: React.FC = () => {
               <motion.div initial={{ scale: 0.9, y: 20, opacity: 0 }} animate={{ scale: 1, y: 0, opacity: 1 }} exit={{ scale: 0.9, y: 20, opacity: 0 }} transition={{ type: "spring", damping: 25, stiffness: 300 }} className="w-full max-w-sm bg-[#111] border border-white/10 rounded-3xl p-6 shadow-2xl overflow-hidden relative" onClick={(e) => e.stopPropagation()}>
                   <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
                   <div className="flex justify-between items-center mb-6"><h2 className="text-lg font-medium text-white">Settings</h2><button onClick={() => setSettingsOpen(false)} className="text-neutral-500 hover:text-white transition-colors">Close</button></div>
+                  
+                  {currentUser && (
+                      <div className="mb-6 p-4 bg-white/5 rounded-2xl flex items-center justify-between">
+                          <div className="flex items-center space-x-3">
+                              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold">{currentUser.username[0].toUpperCase()}</div>
+                              <div>
+                                  <div className="text-sm font-bold text-white">{currentUser.username}</div>
+                                  <div className="text-xs text-neutral-500">{currentUser.email}</div>
+                              </div>
+                          </div>
+                          <button onClick={handleLogout} className="p-2 text-red-400 hover:bg-red-500/10 rounded-full"><LogOut size={18} /></button>
+                      </div>
+                  )}
+
                   {apiError && <div className="mb-4 p-3 bg-red-900/20 border border-red-500/20 rounded-xl text-red-400 text-sm flex items-start space-x-2"><span className="font-bold">Error:</span><span>Invalid API Key or Service Unavailable (401).</span></div>}
                   <div className="mb-4">
                       <label className="text-xs uppercase tracking-wider text-neutral-500 font-bold mb-3 block">Curation Style</label>
@@ -667,6 +865,10 @@ const App: React.FC = () => {
               </motion.div>
           </motion.div>
       )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+          {showAuthModal && <AuthModal />}
       </AnimatePresence>
     </div>
   );

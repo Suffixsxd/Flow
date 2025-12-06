@@ -76,8 +76,8 @@ export const refineNote = async (currentContent: string, instructions: string): 
 export const generateMindMap = async (content: string): Promise<string> => {
     try {
         const raw = await makeRequest(
-            "You are a data visualization expert and educator. Create a detailed mermaid.js graph for learning purposes.",
-            `NOTES:\n${content}\n\nINSTRUCTIONS:\n- Create a 'graph TB' (Top-to-Bottom) flowchart.\n- EDUCATIONAL FOCUS: Nodes must be descriptive. Do not use single words. Include definitions, facts, or context.\n- Example: Instead of [mitochondria], use [Mitochondria: Powerhouse of the cell, generates ATP].\n- Structure: Core Topic -> Key Concepts -> Detailed Explanations.\n- IMPORTANT: Use unique alphanumeric IDs (e.g. Node1[Label]).\n- Do NOT use double quotes (") inside labels.\n- Do NOT use parentheses () inside labels as they break syntax. Use ' - ' instead.\n- Do NOT use brackets [] inside the text content of a node.\n- Do NOT include any style definitions or classDefs in your output, I will handle that.\n- Output ONLY the mermaid code.`
+            "You are a data visualization expert. Create a concise mermaid.js graph.",
+            `NOTES:\n${content}\n\nINSTRUCTIONS:\n- Create a 'graph TB' (Top-to-Bottom) flowchart.\n- STRUCTURE:\n  1. Root Node: The Main Topic.\n  2. Branches: Major Headings.\n  3. Leaves: Key Concepts (Keywords only).\n- CONTENT: Keep labels SHORT and CONCISE (1-4 words max). Do not use long sentences.\n- SYNTAX RULES:\n  1. Use unique alphanumeric IDs (e.g. A1, B2).\n  2. NO double quotes (") inside text.\n  3. NO parentheses () inside text. Replace with dashes.\n  4. NO brackets [] inside the label text.\n  5. Do NOT include style/classDefs.\n- Output ONLY the mermaid code.`
         );
         
         // Clean up markdown code blocks if present
@@ -96,12 +96,10 @@ export const generateMindMap = async (content: string): Promise<string> => {
         cleaned = cleaned.replace(/"/g, "'");
 
         // Aggressive sanitize: Remove parentheses to prevent 'got PS' errors in Mermaid
-        // We replace '(' with ' - ' and ')' with '' to keep text readable but safe
         cleaned = cleaned.replace(/\(/g, ' - ').replace(/\)/g, '');
 
         // Prepend valid header and custom style for the "vertical, less cluttered" look
-        // Dark pill-shaped nodes with decent padding
-        const style = "classDef default fill:#1a1a1a,stroke:#444,stroke-width:1px,color:#fff,rx:20,ry:20,font-family:Inter,padding:20px,line-height:1.5;";
+        const style = "classDef default fill:#1a1a1a,stroke:#444,stroke-width:1px,color:#fff,rx:20,ry:20,font-family:Inter,padding:15px,line-height:1.2;";
         
         cleaned = `graph TB\n${style}\n${cleaned}`;
         

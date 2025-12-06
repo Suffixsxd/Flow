@@ -1,5 +1,6 @@
 export interface Note {
   id: string;
+  userId: string; // Added userId foreign key
   title: string;
   rawTranscript: string;
   curatedContent: string;
@@ -7,6 +8,14 @@ export interface Note {
   style: NoteStyle;
   mindMapMermaid?: string;
   flashcards?: string; // JSON string of Flashcard[]
+}
+
+export interface User {
+  id: string;
+  username: string;
+  email: string;
+  isVerified: boolean;
+  createdAt: number;
 }
 
 export interface Flashcard {
