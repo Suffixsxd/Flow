@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Settings, ChevronLeft, MoreHorizontal, Copy, Check, Clock, Sparkles, MicOff, Trash2, ArrowRight, Download, ChevronDown, ChevronUp } from 'lucide-react';
+import { Settings, ChevronLeft, MoreHorizontal, Copy, Check, Clock, Sparkles, MicOff, Trash2, ArrowRight, Download, ChevronDown, ChevronUp, Network, BookOpen, FileText } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { DynamicIsland } from './components/DynamicIsland';
 import { FadeText } from './components/FadeText';
+import { MindMap } from './components/MindMap';
+import { Flashcards } from './components/Flashcards';
 import { useSpeechRecognition } from './hooks/useSpeechRecognition';
-import { curateNote, refineNote } from './services/openRouter';
+import { curateNote, refineNote, generateMindMap, generateFlashcards } from './services/openRouter';
 import { parseMultipleFiles } from './services/fileParser';
-import { Note, NoteStyle } from './types';
-import { initDB, getNotes, addNote, updateNote, deleteNote as deleteNoteDB } from './services/db';
+import { Note, NoteStyle, Flashcard } from './types';
+import { initDB, getNotes, addNote, updateNote, updateMindMap, updateFlashcards, deleteNote as deleteNoteDB } from './services/db';
 
 // Icons for formatting
 const FormatIcons = {
@@ -16,6 +18,8 @@ const FormatIcons = {
   creative: MoreHorizontal,
   meeting: Check,
 };
+
+type ViewMode = 'notes' | 'mindmap' | 'flashcards';
 
 // Custom Audio Frequency Logo
 const Logo: React.FC<{ className?: string }> = ({ className = "w-6 h-6" }) => (
@@ -58,6 +62,7 @@ const App: React.FC = () => {
   const [showLanding, setShowLanding] = useState(true);
   const [notes, setNotes] = useState<Note[]>([]);
   const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
+  const [activeViewMode, setActiveViewMode] = useState<ViewMode>('notes');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [preferredStyle, setPreferredStyle] = useState<NoteStyle>('default');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -65,6 +70,10 @@ const App: React.FC = () => {
   const [apiError, setApiError] = useState(false);
   const [isTranscriptExpanded, setIsTranscriptExpanded] = useState(false);
   
+  // Generation States
+  const [isGeneratingMap, setIsGeneratingMap] = useState(false);
+  const [isGeneratingCards, setIsGeneratingCards] = useState(false);
+
   const activeNote = notes.find(n => n.id === activeNoteId);
 
   const { 
@@ -79,11 +88,8 @@ const App: React.FC = () => {
     permissionDenied
   } = useSpeechRecognition();
   
-  // Refs to handle processing intervals
   const processingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastProcessedLengthRef = useRef(0);
-  
-  // Use a ref to access the latest transcript inside setInterval without triggering re-renders/resets
   const transcriptRef = useRef(transcript);
 
   // Initialize DB and load notes
@@ -93,11 +99,14 @@ const App: React.FC = () => {
     setNotes(savedNotes);
   }, []);
 
+  // Reset view mode when switching notes
+  useEffect(() => {
+    setActiveViewMode('notes');
+  }, [activeNoteId]);
+
   // Sync transcript ref
   useEffect(() => {
     transcriptRef.current = transcript;
-    
-    // Also update the UI state for the raw transcript in real-time
     if (activeNoteId && isListening) {
         setNotes(prev => prev.map(n => 
           n.id === activeNoteId ? { ...n, rawTranscript: transcript } : n
@@ -106,19 +115,14 @@ const App: React.FC = () => {
   }, [transcript, activeNoteId, isListening]);
 
   // Handle live curation loop
-  // IMPORTANT: We use setInterval with transcriptRef to ensure the timer doesn't reset on every word update
   useEffect(() => {
     if (isListening && !isPaused && activeNoteId) {
-        
         const interval = setInterval(async () => {
-            const currentTranscript = transcriptRef.current; // Read from Ref
+            const currentTranscript = transcriptRef.current;
             const newChars = currentTranscript.length - lastProcessedLengthRef.current;
             
-            // Trigger if we have > 20 chars of new content (more responsive)
             if (newChars > 20) {
                 lastProcessedLengthRef.current = currentTranscript.length;
-                
-                // Get latest context
                 let currentCuratedContent = "";
                 setNotes(currentNotes => {
                      const n = currentNotes.find(n => n.id === activeNoteId);
@@ -126,12 +130,10 @@ const App: React.FC = () => {
                      return currentNotes;
                 });
 
-                // Persist interim
                 updateNote(activeNoteId, currentTranscript, currentCuratedContent);
 
                 try {
                   const curated = await curateNote(currentTranscript, preferredStyle, currentCuratedContent);
-                  
                   setNotes(prev => prev.map(n => 
                       n.id === activeNoteId ? { ...n, curatedContent: curated } : n
                   ));
@@ -139,23 +141,16 @@ const App: React.FC = () => {
                   setApiError(false);
                 } catch (err: any) {
                    console.error("Curation error", err);
-                   if (err.message && err.message.includes('401')) {
-                      setApiError(true);
-                   }
+                   if (err.message && err.message.includes('401')) setApiError(true);
                 }
             }
-        }, 5000); // Check every 5 seconds
-        
+        }, 5000);
         processingRef.current = interval;
     } else {
         if (processingRef.current) clearInterval(processingRef.current);
     }
-
-    return () => {
-        if (processingRef.current) clearInterval(processingRef.current);
-    };
-  }, [isListening, isPaused, activeNoteId, preferredStyle]); // Removed 'transcript' from deps to prevent resets
-
+    return () => { if (processingRef.current) clearInterval(processingRef.current); };
+  }, [isListening, isPaused, activeNoteId, preferredStyle]);
 
   const startNewNote = (title: string) => {
     const newNote: Note = {
@@ -166,24 +161,18 @@ const App: React.FC = () => {
       createdAt: Date.now(),
       style: preferredStyle
     };
-    
-    // DB Insert
     addNote(newNote);
-    
     setNotes(prev => [newNote, ...prev]);
     setActiveNoteId(newNote.id);
     resetTranscript();
     lastProcessedLengthRef.current = 0;
-    // Reset ref
     transcriptRef.current = "";
-    
     setIsTranscriptExpanded(false); 
     startListening();
   };
 
   const handleStopRecording = async () => {
     stopListening();
-    // Final curation pass
     if (activeNoteId && transcript.length > 0) {
          try {
             const curated = await curateNote(transcript, preferredStyle, activeNote?.curatedContent);
@@ -194,14 +183,11 @@ const App: React.FC = () => {
             setApiError(false);
          } catch (err: any) {
             console.error("Final curation error", err);
-            if (err.message && err.message.includes('401')) {
-                setApiError(true);
-            }
+            if (err.message && err.message.includes('401')) setApiError(true);
          }
     }
   };
 
-  // Handle manual text submission
   const handleTextSubmit = async (title: string, text: string) => {
     const newNote: Note = {
       id: Date.now().toString(),
@@ -211,59 +197,47 @@ const App: React.FC = () => {
       createdAt: Date.now(),
       style: preferredStyle
     };
-
     addNote(newNote);
     setNotes(prev => [newNote, ...prev]);
     setActiveNoteId(newNote.id);
     setIsProcessingFile(true);
-    setIsTranscriptExpanded(true); // Auto expand for manual text to see what was entered
+    setIsTranscriptExpanded(true);
 
     try {
       const curated = await curateNote(text, preferredStyle);
       const updatedNote = { ...newNote, curatedContent: curated };
-      
       setNotes(prev => prev.map(n => n.id === newNote.id ? updatedNote : n));
       updateNote(newNote.id, text, curated);
       setApiError(false);
     } catch (err: any) {
       console.error("Manual text curation error", err);
-      if (err.message && err.message.includes('401')) {
-          setApiError(true);
-      }
+      if (err.message && err.message.includes('401')) setApiError(true);
     } finally {
       setIsProcessingFile(false);
     }
   };
   
-  // Handle refinement (Editing)
   const handleRefine = async (instructions: string) => {
       if (!activeNoteId || !activeNote) return;
-
-      setIsProcessingFile(true); // Use processing state for spinner
+      setIsProcessingFile(true);
       try {
           const refinedContent = await refineNote(activeNote.curatedContent, instructions);
-          
           const updatedNote = { ...activeNote, curatedContent: refinedContent };
-          
           setNotes(prev => prev.map(n => n.id === activeNote.id ? updatedNote : n));
           updateNote(activeNote.id, activeNote.rawTranscript, refinedContent);
           setApiError(false);
       } catch (err: any) {
           console.error("Refinement error", err);
-          if (err.message && err.message.includes('401')) {
-              setApiError(true);
-          }
+          if (err.message && err.message.includes('401')) setApiError(true);
       } finally {
           setIsProcessingFile(false);
       }
   };
 
-  // Handle file upload (Single or Multiple)
   const handleFileUpload = async (title: string, files: File[]) => {
     setIsProcessingFile(true);
     try {
         const text = await parseMultipleFiles(files);
-        
         const newNote: Note = {
             id: Date.now().toString(),
             title,
@@ -272,15 +246,13 @@ const App: React.FC = () => {
             createdAt: Date.now(),
             style: preferredStyle
         };
-
         addNote(newNote);
         setNotes(prev => [newNote, ...prev]);
         setActiveNoteId(newNote.id);
-        setIsTranscriptExpanded(false); // Keep collapsed initially for large files
+        setIsTranscriptExpanded(false);
 
         const curated = await curateNote(text, preferredStyle);
         const updatedNote = { ...newNote, curatedContent: curated };
-        
         setNotes(prev => prev.map(n => n.id === newNote.id ? updatedNote : n));
         updateNote(newNote.id, text, curated);
         setApiError(false);
@@ -307,18 +279,7 @@ const App: React.FC = () => {
   };
 
   const handleExport = (note: Note) => {
-    const content = `# ${note.title}
-Date: ${new Date(note.createdAt).toLocaleString()}
-
-## AI Notes
-${note.curatedContent}
-
----
-
-## Raw Transcript
-${note.rawTranscript}
-`;
-
+    const content = `# ${note.title}\nDate: ${new Date(note.createdAt).toLocaleString()}\n\n## AI Notes\n${note.curatedContent}\n\n---\n\n## Raw Transcript\n${note.rawTranscript}`;
     const blob = new Blob([content], { type: 'text/markdown' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -330,10 +291,45 @@ ${note.rawTranscript}
     URL.revokeObjectURL(url);
   };
 
+  // --- View Switching Logic ---
+  const switchToMindMap = async () => {
+    if (!activeNote) return;
+    setActiveViewMode('mindmap');
+    if (!activeNote.mindMapMermaid && !isGeneratingMap && activeNote.curatedContent) {
+        setIsGeneratingMap(true);
+        try {
+            const mermaidCode = await generateMindMap(activeNote.curatedContent);
+            setNotes(prev => prev.map(n => n.id === activeNote.id ? { ...n, mindMapMermaid: mermaidCode } : n));
+            updateMindMap(activeNote.id, mermaidCode);
+        } catch (e) {
+            console.error("Failed to gen map", e);
+        } finally {
+            setIsGeneratingMap(false);
+        }
+    }
+  };
+
+  const switchToFlashcards = async () => {
+      if (!activeNote) return;
+      setActiveViewMode('flashcards');
+      if (!activeNote.flashcards && !isGeneratingCards && activeNote.curatedContent) {
+          setIsGeneratingCards(true);
+          try {
+              const cards = await generateFlashcards(activeNote.curatedContent);
+              const json = JSON.stringify(cards);
+              setNotes(prev => prev.map(n => n.id === activeNote.id ? { ...n, flashcards: json } : n));
+              updateFlashcards(activeNote.id, json);
+          } catch (e) {
+              console.error("Failed to gen cards", e);
+          } finally {
+              setIsGeneratingCards(false);
+          }
+      }
+  };
+
   // Helper to render Markdown-like content
   const renderFormattedContent = (content: string) => {
     if (!content) return null;
-    
     const lines = content.split('\n');
     const elements: React.ReactNode[] = [];
     let inCodeBlock = false;
@@ -343,62 +339,27 @@ ${note.rawTranscript}
     
     const flushList = (keyPrefix: number) => {
         if (listBuffer.length > 0) {
-            elements.push(
-                <div key={`list-group-${keyPrefix}`} className="space-y-2 mb-4">
-                    {listBuffer}
-                </div>
-            );
+            elements.push(<div key={`list-group-${keyPrefix}`} className="space-y-2 mb-4">{listBuffer}</div>);
             listBuffer = [];
         }
     };
-
     const flushTable = (keyPrefix: number) => {
         if (tableBuffer.length === 0) return;
-
-        const rows = tableBuffer.map(row => 
-            row.split('|')
-               .filter((cell, idx, arr) => {
-                   // Markdown tables usually start and end with |, producing empty strings at ends
-                   // Simple check: keep non-empty, or keep all if middle
-                   return true; 
-               })
-        ).map(row => {
-             // Clean up row items: remove empty start/end if they exist
+        const rows = tableBuffer.map(row => row.split('|').filter(() => true)).map(row => {
              const cells = [...row];
              if (cells.length > 0 && cells[0].trim() === '') cells.shift();
              if (cells.length > 0 && cells[cells.length-1].trim() === '') cells.pop();
              return cells;
         });
-
-        if (rows.length > 1) { // Minimum header + one row or just header + separator
-            const header = rows[0];
-            // Skip separator row (index 1) if it exists and looks like separator
+        if (rows.length > 1) {
             const hasSeparator = rows.length > 1 && rows[1].some(c => c.includes('-'));
+            const header = rows[0];
             const body = hasSeparator ? rows.slice(2) : rows.slice(1);
-
             elements.push(
                 <div key={`table-${keyPrefix}`} className="my-6 overflow-x-auto rounded-xl border border-white/10 bg-white/5 shadow-sm">
                     <table className="w-full border-collapse text-sm text-left">
-                        <thead>
-                            <tr>
-                                {header.map((cell, idx) => (
-                                    <th key={idx} className="p-4 border-b border-white/10 font-semibold text-white bg-white/5 whitespace-nowrap">
-                                        <FadeText text={cell.trim()} />
-                                    </th>
-                                ))}
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {body.map((row, rIdx) => (
-                                <tr key={rIdx} className="group hover:bg-white/5 transition-colors border-b border-white/5 last:border-0">
-                                    {row.map((cell, cIdx) => (
-                                        <td key={cIdx} className="p-4 text-neutral-300">
-                                            <FadeText text={cell.trim()} />
-                                        </td>
-                                    ))}
-                                </tr>
-                            ))}
-                        </tbody>
+                        <thead><tr>{header.map((cell, idx) => <th key={idx} className="p-4 border-b border-white/10 font-semibold text-white bg-white/5 whitespace-nowrap"><FadeText text={cell.trim()} /></th>)}</tr></thead>
+                        <tbody>{body.map((row, rIdx) => <tr key={rIdx} className="group hover:bg-white/5 transition-colors border-b border-white/5 last:border-0">{row.map((cell, cIdx) => <td key={cIdx} className="p-4 text-neutral-300"><FadeText text={cell.trim()} /></td>)}</tr>)}</tbody>
                     </table>
                 </div>
             );
@@ -409,118 +370,39 @@ ${note.rawTranscript}
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
         const trimmed = line.trim();
-        
-        // --- Code Block Handling ---
         if (trimmed.startsWith('```')) {
-            flushList(i);
-            flushTable(i);
-
+            flushList(i); flushTable(i);
             if (inCodeBlock) {
-                // Close block
-                elements.push(
-                    <div key={`code-${i}`} className="bg-[#0A0A0A] p-4 rounded-xl font-mono text-sm text-neutral-300 my-4 border border-white/5 shadow-inner overflow-x-auto">
-                        <pre>{codeBlockContent.join('\n')}</pre>
-                    </div>
-                );
-                codeBlockContent = [];
-                inCodeBlock = false;
-            } else {
-                // Open block
-                inCodeBlock = true;
-            }
+                elements.push(<div key={`code-${i}`} className="bg-[#0A0A0A] p-4 rounded-xl font-mono text-sm text-neutral-300 my-4 border border-white/5 shadow-inner overflow-x-auto"><pre>{codeBlockContent.join('\n')}</pre></div>);
+                codeBlockContent = []; inCodeBlock = false;
+            } else { inCodeBlock = true; }
             continue;
         }
-        
-        if (inCodeBlock) {
-            codeBlockContent.push(line);
-            continue;
-        }
-
-        // --- Table Handling ---
-        if (trimmed.startsWith('|')) {
-            flushList(i);
-            tableBuffer.push(line);
-            continue;
-        }
-        // If not a table line, flush any accumulated table
-        if (tableBuffer.length > 0) {
-            flushTable(i);
-        }
-
-        // --- Horizontal Rule ---
+        if (inCodeBlock) { codeBlockContent.push(line); continue; }
+        if (trimmed.startsWith('|')) { flushList(i); tableBuffer.push(line); continue; }
+        if (tableBuffer.length > 0) flushTable(i);
         if (trimmed === '---' || trimmed === '***' || trimmed === '___') {
-            flushList(i);
-            elements.push(
-                <div key={`hr-${i}`} className="py-4">
-                    <hr className="border-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
-                </div>
-            );
-            continue;
+            flushList(i); elements.push(<div key={`hr-${i}`} className="py-4"><hr className="border-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" /></div>); continue;
         }
-
-        // --- Headers ---
         if (trimmed.startsWith('#')) {
             flushList(i);
             const level = trimmed.match(/^#+/)?.[0].length || 1;
             const text = trimmed.replace(/^#+\s*/, '');
-            
-            const styles = {
-                1: "text-3xl font-light text-white mt-8 mb-4 tracking-tight",
-                2: "text-2xl font-light text-white mt-6 mb-3 tracking-tight",
-                3: "text-xl font-medium text-white/90 mt-4 mb-2"
-            };
-            
-            elements.push(
-                <div key={`head-${i}`} className={styles[level as keyof typeof styles] || styles[3]}>
-                    <FadeText text={text} speed={5} />
-                </div>
-            );
-            continue;
+            const styles = { 1: "text-3xl font-light text-white mt-8 mb-4 tracking-tight", 2: "text-2xl font-light text-white mt-6 mb-3 tracking-tight", 3: "text-xl font-medium text-white/90 mt-4 mb-2" };
+            elements.push(<div key={`head-${i}`} className={styles[level as keyof typeof styles] || styles[3]}><FadeText text={text} speed={5} /></div>); continue;
         }
-
-        // --- Lists (Bullets) ---
         if (trimmed.startsWith('- ') || trimmed.startsWith('* ') || trimmed.startsWith('• ')) {
             const text = trimmed.replace(/^[-*•]\s*/, '');
-            listBuffer.push(
-                <div key={`li-${i}`} className="flex items-start space-x-3 ml-1 group">
-                    <span className="text-neutral-500 mt-[6px] w-1.5 h-1.5 rounded-full bg-neutral-600 group-hover:bg-neutral-400 transition-colors shrink-0" />
-                    <div className="flex-1 text-neutral-300 leading-relaxed">
-                        <FadeText text={text} speed={5} />
-                    </div>
-                </div>
-            );
-            continue;
+            listBuffer.push(<div key={`li-${i}`} className="flex items-start space-x-3 ml-1 group"><span className="text-neutral-500 mt-[6px] w-1.5 h-1.5 rounded-full bg-neutral-600 group-hover:bg-neutral-400 transition-colors shrink-0" /><div className="flex-1 text-neutral-300 leading-relaxed"><FadeText text={text} speed={5} /></div></div>); continue;
         }
-
-        // --- Blockquotes ---
         if (trimmed.startsWith('> ')) {
-            flushList(i);
-            elements.push(
-                <div key={`quote-${i}`} className="border-l-2 border-white/20 pl-4 py-1 my-4 italic text-neutral-400">
-                    <FadeText text={trimmed.replace(/^>\s*/, '')} speed={5} />
-                </div>
-            );
-            continue;
+            flushList(i); elements.push(<div key={`quote-${i}`} className="border-l-2 border-white/20 pl-4 py-1 my-4 italic text-neutral-400"><FadeText text={trimmed.replace(/^>\s*/, '')} speed={5} /></div>); continue;
         }
-
-        // --- Normal Paragraph ---
-        if (trimmed === '') {
-            flushList(i);
-            elements.push(<div key={`spacer-${i}`} className="h-2" />);
-        } else {
-            flushList(i);
-            elements.push(
-                <div key={`p-${i}`} className="text-neutral-300 mb-2 leading-relaxed">
-                    <FadeText text={line} speed={5} />
-                </div>
-            );
+        if (trimmed === '') { flushList(i); elements.push(<div key={`spacer-${i}`} className="h-2" />); } else {
+            flushList(i); elements.push(<div key={`p-${i}`} className="text-neutral-300 mb-2 leading-relaxed"><FadeText text={line} speed={5} /></div>);
         }
     }
-    
-    // Flush any remaining buffers
-    flushList(lines.length);
-    flushTable(lines.length);
-    
+    flushList(lines.length); flushTable(lines.length);
     return elements;
   };
 
@@ -528,239 +410,70 @@ ${note.rawTranscript}
       return <div className="h-screen w-full flex items-center justify-center text-white">Browser not supported. Please use Chrome.</div>
   }
 
-  // --- Landing Page View ---
   if (showLanding) {
       return (
           <div className="h-screen w-full flex flex-col items-center justify-center relative overflow-hidden">
-               {/* Background Effects */}
-              <motion.div 
-                  animate={{ 
-                      scale: [1, 1.2, 1],
-                      opacity: [0.3, 0.5, 0.3], 
-                      rotate: [0, 90, 0]
-                  }}
-                  transition={{ duration: 15, repeat: Infinity, ease: "easeInOut" }}
-                  className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] bg-purple-500/10 rounded-full blur-[120px] pointer-events-none" 
-              />
-               <motion.div 
-                  animate={{ 
-                      scale: [1, 1.1, 1],
-                      opacity: [0.2, 0.4, 0.2],
-                      x: [0, 50, 0]
-                  }}
-                  transition={{ duration: 20, repeat: Infinity, ease: "easeInOut" }}
-                  className="absolute bottom-[-10%] right-[-10%] w-[600px] h-[600px] bg-blue-500/10 rounded-full blur-[120px] pointer-events-none" 
-              />
-
+              <motion.div animate={{ scale: [1, 1.2, 1], opacity: [0.3, 0.5, 0.3], rotate: [0, 90, 0] }} transition={{ duration: 15, repeat: Infinity, ease: "easeInOut" }} className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] bg-purple-500/10 rounded-full blur-[120px] pointer-events-none" />
+              <motion.div animate={{ scale: [1, 1.1, 1], opacity: [0.2, 0.4, 0.2], x: [0, 50, 0] }} transition={{ duration: 20, repeat: Infinity, ease: "easeInOut" }} className="absolute bottom-[-10%] right-[-10%] w-[600px] h-[600px] bg-blue-500/10 rounded-full blur-[120px] pointer-events-none" />
               <div className="relative z-10 flex flex-col items-center p-8">
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.8 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ duration: 1, type: "spring" }}
-                    className="mb-8 p-6 rounded-[2rem] bg-gradient-to-tr from-white/5 to-transparent border border-white/10 backdrop-blur-2xl shadow-2xl"
-                  >
-                     <Logo className="w-16 h-16 text-white/90" />
-                  </motion.div>
-
-                  <motion.h1 
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.3, duration: 0.8 }}
-                    className="text-6xl md:text-8xl font-thin tracking-tighter text-transparent bg-clip-text bg-gradient-to-b from-white via-white to-white/40 mb-6 text-center"
-                  >
-                    Flow
-                  </motion.h1>
-
-                  <motion.p 
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ delay: 0.6, duration: 0.8 }}
-                    className="text-neutral-400 font-light text-lg tracking-wide mb-12 text-center max-w-md"
-                  >
-                    Capture thoughts. Curated by AI.<br />
-                    <span className="text-neutral-600 text-sm mt-2 block">Voice, text, or file.</span>
-                  </motion.p>
-
-                  <motion.button
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    transition={{ delay: 0.8, type: "spring" }}
-                    onClick={() => setShowLanding(false)}
-                    className="group relative flex items-center space-x-3 bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/10 px-8 py-4 rounded-full transition-all"
-                  >
-                      <span className="text-white font-medium tracking-wide">Enter Flow</span>
-                      <ArrowRight className="w-4 h-4 text-white/70 group-hover:translate-x-1 transition-transform" />
-                  </motion.button>
+                  <motion.div initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} transition={{ duration: 1, type: "spring" }} className="mb-8 p-6 rounded-[2rem] bg-gradient-to-tr from-white/5 to-transparent border border-white/10 backdrop-blur-2xl shadow-2xl"><Logo className="w-16 h-16 text-white/90" /></motion.div>
+                  <motion.h1 initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3, duration: 0.8 }} className="text-6xl md:text-8xl font-thin tracking-tighter text-transparent bg-clip-text bg-gradient-to-b from-white via-white to-white/40 mb-6 text-center">Flow</motion.h1>
+                  <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.6, duration: 0.8 }} className="text-neutral-400 font-light text-lg tracking-wide mb-12 text-center max-w-md">Capture thoughts. Curated by AI.<br /><span className="text-neutral-600 text-sm mt-2 block">Voice, text, or file.</span></motion.p>
+                  <motion.button initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} transition={{ delay: 0.8, type: "spring" }} onClick={() => setShowLanding(false)} className="group relative flex items-center space-x-3 bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/10 px-8 py-4 rounded-full transition-all"><span className="text-white font-medium tracking-wide">Enter Flow</span><ArrowRight className="w-4 h-4 text-white/70 group-hover:translate-x-1 transition-transform" /></motion.button>
               </div>
           </div>
       );
   }
 
-  // --- Main App View ---
   return (
     <div className="min-h-screen text-white relative selection:bg-white/20">
-      
-      {/* Header */}
       <header className="fixed top-0 left-0 right-0 h-24 z-40 flex items-center justify-center px-6 pointer-events-none">
         <div className="w-full max-w-2xl flex items-center justify-between pointer-events-auto">
             <div className="flex items-center space-x-2">
                 <AnimatePresence mode="wait">
                     {activeNoteId ? (
-                        <motion.button 
-                            key="back"
-                            initial={{ opacity: 0, x: -10 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            exit={{ opacity: 0, x: -10 }}
-                            onClick={() => setActiveNoteId(null)}
-                            className="p-3 -ml-2 rounded-full hover:bg-white/10 transition-colors backdrop-blur-md"
-                        >
-                            <ChevronLeft className="w-5 h-5 text-neutral-200" />
-                        </motion.button>
+                        <motion.button key="back" initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }} onClick={() => setActiveNoteId(null)} className="p-3 -ml-2 rounded-full hover:bg-white/10 transition-colors backdrop-blur-md"><ChevronLeft className="w-5 h-5 text-neutral-200" /></motion.button>
                     ) : (
-                        <motion.div 
-                            key="logo"
-                            initial={{ opacity: 0 }}
-                            animate={{ opacity: 1 }}
-                            className="flex items-center space-x-3 px-2"
-                        >
-                            <div className="w-10 h-10 rounded-xl bg-white/10 backdrop-blur-md border border-white/10 flex items-center justify-center shadow-lg">
-                                <Logo className="w-5 h-5 text-white/90" />
-                            </div>
-                            <span className="font-medium tracking-tight text-white/90 text-lg">Flow</span>
-                        </motion.div>
+                        <motion.div key="logo" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-center space-x-3 px-2"><div className="w-10 h-10 rounded-xl bg-white/10 backdrop-blur-md border border-white/10 flex items-center justify-center shadow-lg"><Logo className="w-5 h-5 text-white/90" /></div><span className="font-medium tracking-tight text-white/90 text-lg">Flow</span></motion.div>
                     )}
                 </AnimatePresence>
                 <AnimatePresence mode="wait">
-                    {activeNoteId && (
-                         <motion.h1 
-                            initial={{ opacity: 0, y: 5 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            className="font-medium text-lg tracking-tight backdrop-blur-md px-2 py-1 rounded-lg"
-                         >
-                            {activeNote?.title}
-                        </motion.h1>
-                    )}
+                    {activeNoteId && <motion.h1 initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} className="font-medium text-lg tracking-tight backdrop-blur-md px-2 py-1 rounded-lg">{activeNote?.title}</motion.h1>}
                 </AnimatePresence>
             </div>
-
             <div className="flex items-center space-x-2">
                 {activeNoteId && activeNote && (
-                  <motion.button
-                    initial={{ opacity: 0, scale: 0.9 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    onClick={() => handleExport(activeNote)}
-                    className="p-3 rounded-full hover:bg-white/10 transition-colors backdrop-blur-md text-neutral-300 hover:text-white"
-                    title="Export Note"
-                  >
-                    <Download className="w-5 h-5" />
-                  </motion.button>
+                  <motion.button initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} onClick={() => handleExport(activeNote)} className="p-3 rounded-full hover:bg-white/10 transition-colors backdrop-blur-md text-neutral-300 hover:text-white" title="Export Note"><Download className="w-5 h-5" /></motion.button>
                 )}
-                <button 
-                    onClick={() => setSettingsOpen(true)}
-                    className="p-3 rounded-full transition-colors backdrop-blur-md hover:text-white hover:bg-white/10 text-neutral-300"
-                >
-                    <Settings className="w-5 h-5" />
-                </button>
+                <button onClick={() => setSettingsOpen(true)} className="p-3 rounded-full transition-colors backdrop-blur-md hover:text-white hover:bg-white/10 text-neutral-300"><Settings className="w-5 h-5" /></button>
             </div>
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="pt-28 pb-32 px-4 max-w-2xl mx-auto min-h-screen">
-        
-        {/* Permission Error */}
+      {/* Main container logic expanded here: width changes based on activeViewMode */}
+      <main className={`pt-28 pb-32 px-4 mx-auto min-h-screen transition-all duration-500 ease-in-out ${activeViewMode === 'mindmap' ? 'max-w-[95vw]' : 'max-w-2xl'}`}>
         <AnimatePresence>
             {permissionDenied && (
-                <motion.div 
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
-                    className="mb-6 p-4 rounded-3xl bg-red-900/20 border border-red-500/20 backdrop-blur-xl text-red-200 flex items-center space-x-3 overflow-hidden"
-                >
-                    <MicOff className="w-5 h-5 flex-shrink-0" />
-                    <span className="text-sm">Microphone access denied. Check your browser settings.</span>
-                </motion.div>
+                <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} className="mb-6 p-4 rounded-3xl bg-red-900/20 border border-red-500/20 backdrop-blur-xl text-red-200 flex items-center space-x-3 overflow-hidden"><MicOff className="w-5 h-5 flex-shrink-0" /><span className="text-sm">Microphone access denied. Check your browser settings.</span></motion.div>
             )}
         </AnimatePresence>
 
-        {/* View: Note List */}
         {!activeNoteId && (
             <div className="space-y-4">
                 {notes.length === 0 ? (
-                    <motion.div 
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        transition={{ duration: 1 }}
-                        className="flex flex-col items-center justify-center h-[60vh] relative"
-                    >
-                         {/* Empty State Ambient Orbs */}
-                        <motion.div 
-                            animate={{ 
-                                scale: [1, 1.2, 1],
-                                opacity: [0.3, 0.5, 0.3], 
-                                rotate: [0, 90, 0]
-                            }}
-                            transition={{ duration: 10, repeat: Infinity, ease: "easeInOut" }}
-                            className="absolute top-1/4 -left-10 w-64 h-64 bg-purple-500/20 rounded-full blur-[80px] pointer-events-none" 
-                        />
-                         <motion.div 
-                            animate={{ 
-                                scale: [1, 1.1, 1],
-                                opacity: [0.2, 0.4, 0.2],
-                                x: [0, 30, 0]
-                            }}
-                            transition={{ duration: 15, repeat: Infinity, ease: "easeInOut" }}
-                            className="absolute bottom-1/3 -right-10 w-64 h-64 bg-blue-500/10 rounded-full blur-[80px] pointer-events-none" 
-                        />
-
-                        <motion.div
-                             initial={{ scale: 0.9, opacity: 0, y: 20 }}
-                             animate={{ scale: 1, opacity: 1, y: 0 }}
-                             transition={{ type: "spring", duration: 0.8 }}
-                             className="z-10 flex flex-col items-center"
-                        >
-                            <h2 className="text-4xl font-light tracking-tighter text-neutral-300 text-center">
-                                No notes yet
-                            </h2>
-                            <p className="mt-4 text-neutral-500 font-light tracking-wide text-sm text-center max-w-[200px]">
-                                Tap the + button to start capturing.
-                            </p>
-                        </motion.div>
+                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 1 }} className="flex flex-col items-center justify-center h-[60vh] relative">
+                        <motion.div animate={{ scale: [1, 1.2, 1], opacity: [0.3, 0.5, 0.3], rotate: [0, 90, 0] }} transition={{ duration: 10, repeat: Infinity, ease: "easeInOut" }} className="absolute top-1/4 -left-10 w-64 h-64 bg-purple-500/20 rounded-full blur-[80px] pointer-events-none" />
+                        <motion.div animate={{ scale: [1, 1.1, 1], opacity: [0.2, 0.4, 0.2], x: [0, 30, 0] }} transition={{ duration: 15, repeat: Infinity, ease: "easeInOut" }} className="absolute bottom-1/3 -right-10 w-64 h-64 bg-blue-500/10 rounded-full blur-[80px] pointer-events-none" />
+                        <motion.div initial={{ scale: 0.9, opacity: 0, y: 20 }} animate={{ scale: 1, opacity: 1, y: 0 }} transition={{ type: "spring", duration: 0.8 }} className="z-10 flex flex-col items-center"><h2 className="text-4xl font-light tracking-tighter text-neutral-300 text-center">No notes yet</h2><p className="mt-4 text-neutral-500 font-light tracking-wide text-sm text-center max-w-[200px]">Tap the + button to start capturing.</p></motion.div>
                     </motion.div>
                 ) : (
                     <div className="grid gap-4">
                         <AnimatePresence>
                             {notes.map((note, i) => (
-                                <motion.div 
-                                    key={note.id}
-                                    layoutId={note.id}
-                                    initial={{ opacity: 0, y: 20, scale: 0.95 }}
-                                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                                    exit={{ opacity: 0, scale: 0.9 }}
-                                    transition={{ delay: i * 0.05, type: "spring", stiffness: 300, damping: 30 }}
-                                    onClick={() => setActiveNoteId(note.id)}
-                                    className="group relative p-6 rounded-[2rem] bg-neutral-900/40 backdrop-blur-xl border border-white/5 hover:border-white/10 transition-all cursor-pointer hover:bg-neutral-800/40 shadow-lg hover:shadow-2xl hover:shadow-black/20"
-                                >
-                                    <div className="flex justify-between items-start mb-3">
-                                        <h3 className="font-medium text-lg text-neutral-100 tracking-tight group-hover:text-white transition-colors">{note.title}</h3>
-                                        <span className="text-[10px] uppercase tracking-wider text-neutral-600 font-medium bg-white/5 px-2 py-1 rounded-full border border-white/5">
-                                            {new Date(note.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                                        </span>
-                                    </div>
-                                    <p className="text-sm text-neutral-400 line-clamp-2 leading-relaxed font-light">
-                                        {note.curatedContent || note.rawTranscript || "Empty note..."}
-                                    </p>
-                                    <div className="absolute top-6 right-4 flex space-x-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                        <button 
-                                            onClick={(e) => deleteNote(e, note.id)}
-                                            className="p-2 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-full transition-colors"
-                                            title="Delete"
-                                        >
-                                            <Trash2 size={14} />
-                                        </button>
-                                    </div>
+                                <motion.div key={note.id} layoutId={note.id} initial={{ opacity: 0, y: 20, scale: 0.95 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} transition={{ delay: i * 0.05, type: "spring", stiffness: 300, damping: 30 }} onClick={() => setActiveNoteId(note.id)} className="group relative p-6 rounded-[2rem] bg-neutral-900/40 backdrop-blur-xl border border-white/5 hover:border-white/10 transition-all cursor-pointer hover:bg-neutral-800/40 shadow-lg hover:shadow-2xl hover:shadow-black/20">
+                                    <div className="flex justify-between items-start mb-3"><h3 className="font-medium text-lg text-neutral-100 tracking-tight group-hover:text-white transition-colors">{note.title}</h3><span className="text-[10px] uppercase tracking-wider text-neutral-600 font-medium bg-white/5 px-2 py-1 rounded-full border border-white/5">{new Date(note.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span></div>
+                                    <p className="text-sm text-neutral-400 line-clamp-2 leading-relaxed font-light">{note.curatedContent || note.rawTranscript || "Empty note..."}</p>
+                                    <div className="absolute top-6 right-4 flex space-x-2 opacity-0 group-hover:opacity-100 transition-opacity"><button onClick={(e) => deleteNote(e, note.id)} className="p-2 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-full transition-colors" title="Delete"><Trash2 size={14} /></button></div>
                                 </motion.div>
                             ))}
                         </AnimatePresence>
@@ -769,192 +482,121 @@ ${note.rawTranscript}
             </div>
         )}
 
-        {/* View: Active Note */}
         {activeNote && (
-            <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.4 }}
-                className="space-y-8"
-            >
-                {/* Status Indicator */}
-                {(isListening || isProcessingFile) && (
-                    <motion.div 
-                        initial={{ opacity: 0, y: -10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="flex justify-center"
-                    >
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.4 }} className="space-y-6">
+                
+                {/* View Tabs */}
+                <div className="flex justify-center space-x-1 bg-white/5 rounded-full p-1 border border-white/5 self-center mx-auto w-fit mb-4">
+                    {[
+                        { id: 'notes', label: 'Notes', icon: FileText },
+                        { id: 'mindmap', label: 'Mind Map', icon: Network },
+                        { id: 'flashcards', label: 'Study', icon: BookOpen },
+                    ].map((tab) => (
+                        <button
+                            key={tab.id}
+                            onClick={() => tab.id === 'mindmap' ? switchToMindMap() : tab.id === 'flashcards' ? switchToFlashcards() : setActiveViewMode('notes')}
+                            className={`flex items-center space-x-2 px-4 py-2 rounded-full text-sm font-medium transition-all ${activeViewMode === tab.id ? 'bg-white text-black shadow-lg' : 'text-neutral-500 hover:text-white hover:bg-white/5'}`}
+                        >
+                            <tab.icon size={16} />
+                            <span>{tab.label}</span>
+                        </button>
+                    ))}
+                </div>
+
+                {/* Status Bar */}
+                {(isListening || isProcessingFile || isGeneratingMap || isGeneratingCards) && (
+                    <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="flex justify-center">
                         <span className={`inline-flex items-center px-4 py-1.5 rounded-full text-xs font-medium border shadow-[0_0_20px_-5px_rgba(239,68,68,0.4)] ${isPaused ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20' : 'bg-red-500/10 text-red-400 border-red-500/20 animate-pulse'}`}>
                             <span className={`w-1.5 h-1.5 rounded-full mr-2 ${isPaused ? 'bg-yellow-500' : 'bg-red-500'}`} />
-                            {isProcessingFile ? (activeNote.curatedContent ? 'Refining Note...' : 'Analyzing File') : isPaused ? 'Recording Paused' : 'Live Transcribing'}
+                            {isGeneratingMap ? 'Generating Mind Map...' : isGeneratingCards ? 'Creating Flashcards...' : isProcessingFile ? 'Processing...' : isPaused ? 'Recording Paused' : 'Live Transcribing'}
                         </span>
                     </motion.div>
                 )}
 
-                {/* The Content */}
-                <div className="grid gap-6">
-                    {/* If we have curated content, show it prominently */}
-                    <AnimatePresence>
-                    {activeNote.curatedContent && (
-                        <motion.div 
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            className="relative overflow-hidden rounded-[2.5rem] bg-gradient-to-b from-neutral-800/50 to-neutral-900/50 backdrop-blur-2xl border border-white/5 p-8 shadow-2xl"
-                        >
-                            {/* Decorative gradient blob */}
-                            <div className="absolute -top-20 -right-20 w-64 h-64 bg-white/5 rounded-full blur-[80px] pointer-events-none" />
-                            
-                            <div className="flex items-center justify-between mb-6">
-                                <div className="flex items-center space-x-2 text-neutral-400 text-xs uppercase tracking-widest font-bold">
-                                    <div className="p-1 bg-white/10 rounded-md"><Sparkles className="w-3 h-3 text-white" /></div>
-                                    <span>AI Curated Note</span>
-                                </div>
-                                <button
-                                    onClick={() => handleCopy(activeNote.curatedContent, 'curated')}
-                                    className="p-2 rounded-full hover:bg-white/10 text-neutral-400 hover:text-white transition-colors"
-                                    title="Copy Text"
-                                >
-                                    {copiedId === 'curated' ? <Check size={16} /> : <Copy size={16} />}
-                                </button>
-                            </div>
-                            
-                            <div className="relative z-10">
-                                {renderFormattedContent(activeNote.curatedContent || "")}
-                            </div>
-                        </motion.div>
-                    )}
-                    </AnimatePresence>
-
-                    {/* Raw Transcript (Collapsible) */}
-                    <div className="space-y-2">
-                        <button 
-                            onClick={() => setIsTranscriptExpanded(!isTranscriptExpanded)}
-                            className="w-full flex items-center justify-between p-4 rounded-[2rem] border border-dashed border-neutral-800 bg-neutral-900/20 backdrop-blur-sm hover:bg-neutral-900/40 transition-colors text-left group"
-                        >
-                            <div className="flex items-center space-x-2 text-neutral-500 text-xs uppercase tracking-widest font-bold pl-4">
-                                <MoreHorizontal className="w-3 h-3" />
-                                <span>{isProcessingFile ? "File Content" : "Raw Transcript"}</span>
-                            </div>
-                            <div className="flex items-center space-x-2 pr-2">
-                                <div className={`p-2 rounded-full text-neutral-500 transition-colors ${isTranscriptExpanded ? 'bg-white/10 text-white' : ''}`}>
-                                     {isTranscriptExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                                </div>
-                            </div>
-                        </button>
-                        
+                {/* Views */}
+                {activeViewMode === 'notes' && (
+                    <div className="grid gap-6">
                         <AnimatePresence>
-                            {isTranscriptExpanded && (
-                                <motion.div 
-                                    initial={{ height: 0, opacity: 0 }}
-                                    animate={{ height: 'auto', opacity: 1 }}
-                                    exit={{ height: 0, opacity: 0 }}
-                                    className="overflow-hidden"
-                                >
-                                    <div className="p-8 rounded-[2.5rem] border border-dashed border-neutral-800 bg-neutral-900/20 backdrop-blur-sm relative">
-                                        <div className="absolute top-4 right-4">
-                                             <button
-                                                onClick={() => handleCopy(activeNote.rawTranscript, 'raw')}
-                                                className="p-2 rounded-full hover:bg-white/10 text-neutral-500 hover:text-white transition-colors"
-                                                title="Copy Text"
-                                            >
-                                                {copiedId === 'raw' ? <Check size={14} /> : <Copy size={14} />}
-                                            </button>
-                                        </div>
-                                        <div className="text-neutral-400 text-base leading-relaxed font-mono whitespace-pre-wrap">
-                                            {activeNote.rawTranscript ? (
-                                                <FadeText text={activeNote.rawTranscript} />
-                                            ) : (
-                                                <span className="italic opacity-30">
-                                                    {isProcessingFile ? "Extracting text..." : "Listening for your voice..."}
-                                                </span>
-                                            )}
-                                        </div>
-                                    </div>
-                                </motion.div>
-                            )}
+                        {activeNote.curatedContent && (
+                            <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="relative overflow-hidden rounded-[2.5rem] bg-gradient-to-b from-neutral-800/50 to-neutral-900/50 backdrop-blur-2xl border border-white/5 p-8 shadow-2xl">
+                                <div className="absolute -top-20 -right-20 w-64 h-64 bg-white/5 rounded-full blur-[80px] pointer-events-none" />
+                                <div className="flex items-center justify-between mb-6">
+                                    <div className="flex items-center space-x-2 text-neutral-400 text-xs uppercase tracking-widest font-bold"><div className="p-1 bg-white/10 rounded-md"><Sparkles className="w-3 h-3 text-white" /></div><span>AI Curated Note</span></div>
+                                    <button onClick={() => handleCopy(activeNote.curatedContent, 'curated')} className="p-2 rounded-full hover:bg-white/10 text-neutral-400 hover:text-white transition-colors" title="Copy Text">{copiedId === 'curated' ? <Check size={16} /> : <Copy size={16} />}</button>
+                                </div>
+                                <div className="relative z-10">{renderFormattedContent(activeNote.curatedContent || "")}</div>
+                            </motion.div>
+                        )}
                         </AnimatePresence>
+
+                        <div className="space-y-2">
+                            <button onClick={() => setIsTranscriptExpanded(!isTranscriptExpanded)} className="w-full flex items-center justify-between p-4 rounded-[2rem] border border-dashed border-neutral-800 bg-neutral-900/20 backdrop-blur-sm hover:bg-neutral-900/40 transition-colors text-left group">
+                                <div className="flex items-center space-x-2 text-neutral-500 text-xs uppercase tracking-widest font-bold pl-4"><MoreHorizontal className="w-3 h-3" /><span>{isProcessingFile ? "File Content" : "Raw Transcript"}</span></div>
+                                <div className="flex items-center space-x-2 pr-2"><div className={`p-2 rounded-full text-neutral-500 transition-colors ${isTranscriptExpanded ? 'bg-white/10 text-white' : ''}`}>{isTranscriptExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</div></div>
+                            </button>
+                            <AnimatePresence>
+                                {isTranscriptExpanded && (
+                                    <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+                                        <div className="p-8 rounded-[2.5rem] border border-dashed border-neutral-800 bg-neutral-900/20 backdrop-blur-sm relative">
+                                            <div className="absolute top-4 right-4"><button onClick={() => handleCopy(activeNote.rawTranscript, 'raw')} className="p-2 rounded-full hover:bg-white/10 text-neutral-500 hover:text-white transition-colors" title="Copy Text">{copiedId === 'raw' ? <Check size={14} /> : <Copy size={14} />}</button></div>
+                                            <div className="text-neutral-400 text-base leading-relaxed font-mono whitespace-pre-wrap">{activeNote.rawTranscript ? <FadeText text={activeNote.rawTranscript} /> : <span className="italic opacity-30">{isProcessingFile ? "Extracting text..." : "Listening for your voice..."}</span>}</div>
+                                        </div>
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+                        </div>
                     </div>
-                </div>
+                )}
+
+                {activeViewMode === 'mindmap' && (
+                    <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center w-full">
+                        {isGeneratingMap ? (
+                            <div className="h-64 flex items-center justify-center text-neutral-500 font-light">Thinking...</div>
+                        ) : activeNote.mindMapMermaid ? (
+                            <MindMap code={activeNote.mindMapMermaid} />
+                        ) : (
+                            <div className="h-64 flex flex-col items-center justify-center text-neutral-500">
+                                <span>Unable to generate Mind Map</span>
+                                <span className="text-xs mt-2">Try adding more content first.</span>
+                            </div>
+                        )}
+                    </motion.div>
+                )}
+
+                {activeViewMode === 'flashcards' && (
+                    <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center">
+                         {isGeneratingCards ? (
+                            <div className="h-64 flex items-center justify-center text-neutral-500 font-light">Creating study material...</div>
+                        ) : activeNote.flashcards ? (
+                            <Flashcards cards={JSON.parse(activeNote.flashcards)} />
+                        ) : (
+                            <div className="h-64 flex flex-col items-center justify-center text-neutral-500">
+                                <span>No flashcards available</span>
+                                <span className="text-xs mt-2">Try adding more content first.</span>
+                            </div>
+                        )}
+                    </motion.div>
+                )}
+
             </motion.div>
         )}
-
       </main>
 
-      {/* Dynamic Island Control (Only show in App View) */}
-      <DynamicIsland 
-        isRecording={isListening}
-        isPaused={isPaused}
-        isLoading={isProcessingFile}
-        onStartRecording={startNewNote}
-        onStopRecording={handleStopRecording}
-        onTogglePause={togglePause}
-        onSubmitText={handleTextSubmit}
-        onSubmitFile={handleFileUpload}
-        activeNoteId={activeNoteId}
-        onRefine={handleRefine}
-      />
+      <DynamicIsland isRecording={isListening} isPaused={isPaused} isLoading={isProcessingFile} onStartRecording={startNewNote} onStopRecording={handleStopRecording} onTogglePause={togglePause} onSubmitText={handleTextSubmit} onSubmitFile={handleFileUpload} activeNoteId={activeNoteId} onRefine={handleRefine} />
 
-      {/* Settings Modal */}
       <AnimatePresence>
       {settingsOpen && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-md p-4"
-            onClick={() => setSettingsOpen(false)}
-          >
-              <motion.div 
-                initial={{ scale: 0.9, y: 20, opacity: 0 }}
-                animate={{ scale: 1, y: 0, opacity: 1 }}
-                exit={{ scale: 0.9, y: 20, opacity: 0 }}
-                transition={{ type: "spring", damping: 25, stiffness: 300 }}
-                className="w-full max-w-sm bg-[#111] border border-white/10 rounded-3xl p-6 shadow-2xl overflow-hidden relative"
-                onClick={(e) => e.stopPropagation()}
-              >
-                  {/* Glass highlight */}
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-md p-4" onClick={() => setSettingsOpen(false)}>
+              <motion.div initial={{ scale: 0.9, y: 20, opacity: 0 }} animate={{ scale: 1, y: 0, opacity: 1 }} exit={{ scale: 0.9, y: 20, opacity: 0 }} transition={{ type: "spring", damping: 25, stiffness: 300 }} className="w-full max-w-sm bg-[#111] border border-white/10 rounded-3xl p-6 shadow-2xl overflow-hidden relative" onClick={(e) => e.stopPropagation()}>
                   <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
-
-                  <div className="flex justify-between items-center mb-6">
-                      <h2 className="text-lg font-medium text-white">Settings</h2>
-                      <button onClick={() => setSettingsOpen(false)} className="text-neutral-500 hover:text-white transition-colors">Close</button>
-                  </div>
-                  
-                  {apiError && (
-                      <div className="mb-4 p-3 bg-red-900/20 border border-red-500/20 rounded-xl text-red-400 text-sm flex items-start space-x-2">
-                          <span className="font-bold">Error:</span>
-                          <span>Invalid API Key or Service Unavailable (401).</span>
-                      </div>
-                  )}
-
+                  <div className="flex justify-between items-center mb-6"><h2 className="text-lg font-medium text-white">Settings</h2><button onClick={() => setSettingsOpen(false)} className="text-neutral-500 hover:text-white transition-colors">Close</button></div>
+                  {apiError && <div className="mb-4 p-3 bg-red-900/20 border border-red-500/20 rounded-xl text-red-400 text-sm flex items-start space-x-2"><span className="font-bold">Error:</span><span>Invalid API Key or Service Unavailable (401).</span></div>}
                   <div className="mb-4">
                       <label className="text-xs uppercase tracking-wider text-neutral-500 font-bold mb-3 block">Curation Style</label>
                       <div className="space-y-2">
                           {(['default', 'academic', 'creative', 'meeting'] as NoteStyle[]).map((style) => {
-                              const Icon = FormatIcons[style];
-                              const isActive = preferredStyle === style;
-                              return (
-                                  <button
-                                    key={style}
-                                    onClick={() => setPreferredStyle(style)}
-                                    className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all duration-300 ${
-                                        isActive 
-                                        ? 'bg-white text-black border-white shadow-[0_0_20px_-5px_rgba(255,255,255,0.3)]' 
-                                        : 'bg-neutral-900/50 text-neutral-400 border-transparent hover:bg-neutral-800'
-                                    }`}
-                                  >
-                                      <div className="flex items-center space-x-3">
-                                          <Icon className={`w-5 h-5 ${isActive ? 'text-black' : 'text-neutral-500'}`} />
-                                          <span className="capitalize font-medium">{style}</span>
-                                      </div>
-                                      {isActive && (
-                                        <motion.div 
-                                            layoutId="activeDot"
-                                            className="w-2 h-2 rounded-full bg-black" 
-                                        />
-                                      )}
-                                  </button>
-                              )
+                              const Icon = FormatIcons[style]; const isActive = preferredStyle === style;
+                              return <button key={style} onClick={() => setPreferredStyle(style)} className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all duration-300 ${isActive ? 'bg-white text-black border-white shadow-[0_0_20px_-5px_rgba(255,255,255,0.3)]' : 'bg-neutral-900/50 text-neutral-400 border-transparent hover:bg-neutral-800'}`}><div className="flex items-center space-x-3"><Icon className={`w-5 h-5 ${isActive ? 'text-black' : 'text-neutral-500'}`} /><span className="capitalize font-medium">{style}</span></div>{isActive && <motion.div layoutId="activeDot" className="w-2 h-2 rounded-full bg-black" />}</button>
                           })}
                       </div>
                   </div>

@@ -25,14 +25,25 @@ export const initDB = () => {
     
     alasql(`USE ${DB_NAME}`);
     
+    // Create table with new columns if it doesn't exist
+    // Note: If table exists from old version, alasql won't alter it automatically in this simple setup.
+    // For a robust app, we'd check columns and ALTER TABLE.
+    // For this prototype, we assume fresh start or rely on flexible INSERT (Alasql is loose with schema if not strict)
     alasql(`CREATE TABLE IF NOT EXISTS ${TABLE_NAME} (
       id STRING PRIMARY KEY,
       title STRING,
       rawTranscript STRING,
       curatedContent STRING,
       createdAt NUMBER,
-      style STRING
+      style STRING,
+      mindMapMermaid STRING,
+      flashcards STRING
     )`);
+
+    // Hacky migration for existing tables: try to add columns if missing
+    try { alasql(`ALTER TABLE ${TABLE_NAME} ADD COLUMN mindMapMermaid STRING`); } catch(e){}
+    try { alasql(`ALTER TABLE ${TABLE_NAME} ADD COLUMN flashcards STRING`); } catch(e){}
+
   } catch (e) {
     console.error("Failed to initialize SQL database:", e);
   }
@@ -51,8 +62,8 @@ export const getNotes = (): Note[] => {
 export const addNote = (note: Note) => {
   try {
     if (typeof alasql === 'undefined') return;
-    alasql(`INSERT INTO ${TABLE_NAME} VALUES (?, ?, ?, ?, ?, ?)`, 
-      [note.id, note.title, note.rawTranscript, note.curatedContent, note.createdAt, note.style]
+    alasql(`INSERT INTO ${TABLE_NAME} VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, 
+      [note.id, note.title, note.rawTranscript, note.curatedContent, note.createdAt, note.style, note.mindMapMermaid || "", note.flashcards || ""]
     );
   } catch (e) {
     console.error("Failed to add note:", e);
@@ -67,6 +78,24 @@ export const updateNote = (id: string, rawTranscript: string, curatedContent: st
     );
   } catch (e) {
     console.error("Failed to update note:", e);
+  }
+};
+
+export const updateMindMap = (id: string, mermaid: string) => {
+  try {
+    if (typeof alasql === 'undefined') return;
+    alasql(`UPDATE ${TABLE_NAME} SET mindMapMermaid = ? WHERE id = ?`, [mermaid, id]);
+  } catch (e) {
+    console.error("Failed to update mind map:", e);
+  }
+};
+
+export const updateFlashcards = (id: string, flashcardsJson: string) => {
+  try {
+    if (typeof alasql === 'undefined') return;
+    alasql(`UPDATE ${TABLE_NAME} SET flashcards = ? WHERE id = ?`, [flashcardsJson, id]);
+  } catch (e) {
+    console.error("Failed to update flashcards:", e);
   }
 };
 

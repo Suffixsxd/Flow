@@ -5,6 +5,14 @@ export interface Note {
   curatedContent: string;
   createdAt: number;
   style: NoteStyle;
+  mindMapMermaid?: string;
+  flashcards?: string; // JSON string of Flashcard[]
+}
+
+export interface Flashcard {
+  id: string;
+  front: string;
+  back: string;
 }
 
 export type NoteStyle = 'default' | 'academic' | 'creative' | 'meeting';
